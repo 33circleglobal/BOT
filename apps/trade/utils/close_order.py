@@ -23,7 +23,7 @@ def quick_close_position(order: Order, user: User):
     try:
         user_binance_key = UserKey.objects.get(user=user, is_active=True)
         exchange = create_connection_with_ccxt(
-            api_key=user_binance_key.api_key, api_secret=user_binance_key.api_secret
+            api_key=user_binance_key._api_key, api_secret=user_binance_key._api_secret
         )
         symbol = order.symbol
         quantity = order.order_quantity
