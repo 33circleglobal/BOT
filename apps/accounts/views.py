@@ -23,7 +23,7 @@ def register_view(request):
 
 def login_view(request):
     if request.user.is_authenticated:
-        return redirect("news:crypto_news_list")
+        return redirect("accounts:home")
 
     form = LoginForm(request.POST or None)
     if request.method == "POST":
@@ -39,7 +39,7 @@ def login_view(request):
             if user is not None:
                 login(request, user)
                 messages.success(request, "Login successful.")
-                return redirect("news:crypto_news_list")
+                return redirect("accounts:home")
             else:
                 messages.error(request, "Invalid username or password.")
     return render(request, "accounts/login.html", {"form": form})
