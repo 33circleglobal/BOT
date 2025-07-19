@@ -6,3 +6,4 @@ celery==5.5.3
 gunicorn==23.0.0
 gevent==25.5.1
 redis==6.2.0
+ccxt==4.4.95
