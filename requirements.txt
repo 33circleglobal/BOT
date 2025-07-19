@@ -7,3 +7,8 @@ gunicorn==23.0.0
 gevent==25.5.1
 redis==6.2.0
 ccxt==4.4.95
+django-storages==1.14.6
+boto3==1.39.9
+botocore==1.39.9
+s3transfer==0.13.1
+jmespath==1.0.1
