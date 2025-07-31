@@ -47,7 +47,7 @@ def set_margin_mode(exchange, symbol, margin_mode):
         return False
 
 
-def create_binance_order(side, symbol, user):
+def create_binance_future_order(side, symbol, user):
     try:
         margin_mode = "isolated"
         side = side

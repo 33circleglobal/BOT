@@ -3,8 +3,11 @@ from django.db import transaction
 
 from apps.accounts.models import UserKey, User
 from apps.trade.models import Order
-from apps.trade.utils.create_market_order import create_binance_order
+from apps.trade.utils.create_market_order import create_binance_future_order
 from apps.trade.utils.close_order import quick_close_position
+
+from apps.trade.utils.close_market_order_spot import quick_close_spot_position
+from apps.trade.utils.create_market_binance_spot_order import create_binance_spot_order
 
 import logging
 
@@ -26,7 +29,8 @@ def create_order_of_user_controller(side, symbol):
 def create_order_of_user(self, side, symbol, user_id):
     try:
         user = User.objects.get(id=user_id)
-        create_binance_order(side, symbol, user)
+        # create_binance_future_order(side, symbol, user)
+        create_binance_spot_order(side, symbol, user)
     except Exception as e:
         print("Caught exception:", e)
         raise self.retry(exc=e)
@@ -48,7 +52,8 @@ def close_order_of_user_controller(side, symbol):
 def quick_close_user_order(self, order_id):
     try:
         order = Order.objects.get(id=order_id)
-        quick_close_position(order=order, user=order.user)
+        # quick_close_position(order=order, user=order.user)
+        quick_close_spot_position(order=order, user=order.user)
     except Exception as e:
         print("Caught exception:", e)
         raise self.retry(exc=e)

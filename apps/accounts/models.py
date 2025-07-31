@@ -41,5 +41,12 @@ class UserKey(models.Model):
     def api_secret(self, value):
         self._api_secret = encrypt_value(value)
 
+    def save(self, *args, **kwargs):
+        if self._api_key and not self._api_key.startswith("gAAAA"):
+            self._api_key = encrypt_value(self._api_key)
+        if self._api_secret and not self._api_secret.startswith("gAAAA"):
+            self._api_secret = encrypt_value(self._api_secret)
+        super().save(*args, **kwargs)
+
     class Meta:
         db_table = "user_keys"
