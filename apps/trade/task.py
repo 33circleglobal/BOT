@@ -1,4 +1,4 @@
-from celery import shared_task
+from config import celery_app
 from django.db import transaction
 
 from apps.accounts.models import UserKey, User
@@ -14,8 +14,8 @@ import logging
 logger = logging.getLogger(__name__)
 
 
-@shared_task
-def create_order_of_user_controller(side, symbol):
+@celery_app.task(bind=True)
+def create_order_of_user_controller(self, side, symbol):
     try:
         users_key = UserKey.objects.filter(is_active=True)
 
@@ -25,7 +25,9 @@ def create_order_of_user_controller(side, symbol):
         print(f"Error dispatching  order create: {str(e)}")
 
 
-@shared_task(bind=True, autoretry_for=(Exception,), retry_backoff=True, max_retries=3)
+@celery_app.task(
+    bind=True, autoretry_for=(Exception,), retry_backoff=True, max_retries=3
+)
 def create_order_of_user(self, side, symbol, user_id):
     try:
         user = User.objects.get(id=user_id)
@@ -36,19 +38,23 @@ def create_order_of_user(self, side, symbol, user_id):
         raise self.retry(exc=e)
 
 
-@shared_task
-def close_order_of_user_controller(side, symbol):
+@celery_app.task(bind=True)
+def close_order_of_user_controller(self, side, symbol):
     position_direction = (
-        Order.TradeDirection.LONG if side == "buy" else Order.TradeDirection.SHORT
+        Order.TradeDirection.LONG if side == "sell" else Order.TradeDirection.SHORT
     )
+    print(position_direction)
     orders = Order.objects.filter(
         symbol=symbol, status=Order.TradeStatus.POSITION, direction=position_direction
     )
+    print(orders)
     for order in orders:
         quick_close_user_order.delay(order_id=order.id)
 
 
-@shared_task(bind=True, autoretry_for=(Exception,), retry_backoff=True, max_retries=3)
+@celery_app.task(
+    bind=True, autoretry_for=(Exception,), retry_backoff=True, max_retries=3
+)
 def quick_close_user_order(self, order_id):
     try:
         order = Order.objects.get(id=order_id)

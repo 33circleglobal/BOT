@@ -26,14 +26,17 @@ class Order(models.Model):
 
     # Quantity and pricing
     order_quantity = models.DecimalField(max_digits=20, decimal_places=10, default=0)
+    final_quantity = models.DecimalField(max_digits=20, decimal_places=10, default=0)
     entry_price = models.DecimalField(max_digits=20, decimal_places=10, default=0)
     exit_price = models.DecimalField(max_digits=20, decimal_places=10, default=0)
     total_cost = models.DecimalField(max_digits=20, decimal_places=10, default=0)
 
     # Fee tracking
-    fee = models.DecimalField(max_digits=20, decimal_places=10, default=0)
-    fee_currency = models.CharField(max_length=10, default="USDT")
-    fee_rate = models.DecimalField(
+    entry_fee = models.DecimalField(max_digits=20, decimal_places=10, default=0)
+    entry_fee_currency = models.CharField(max_length=10, default="USDT")
+    exit_fee = models.DecimalField(max_digits=20, decimal_places=10, default=0)
+    exit_fee_currency = models.CharField(max_length=10, default="USDT")
+    total_fee = models.DecimalField(
         max_digits=10, decimal_places=6, null=True, blank=True
     )
 
@@ -68,8 +71,8 @@ class Order(models.Model):
     def __str__(self):
         return f"{self.symbol} {self.direction} ({self.order_id})"
 
-    def save(self, *args, **kwargs):
-        if self.exit_price and self.entry_price:
-            price_diff = self.exit_price - self.entry_price
-            self.pnl_percentage = (price_diff / self.entry_price) * 100
-        super().save(*args, **kwargs)
+    # def save(self, *args, **kwargs):
+    #     if self.exit_price and self.entry_price:
+    #         price_diff = (self.exit_price) - self.entry_price
+    #         self.pnl_percentage = (price_diff / self.entry_price) * 100
+    #     super().save(*args, **kwargs)

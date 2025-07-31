@@ -20,8 +20,10 @@ def trading_view_webhook(request):
         payload = json.loads(request.body)
         symbol = payload.get("symbol")
         side = payload.get("side")
-        create_order_of_user_controller.delay(side, symbol)
-        close_order_of_user_controller(side, symbol)
+        if side == "buy":
+            create_order_of_user_controller.delay(side, symbol)
+        else:
+            close_order_of_user_controller.delay(side, symbol)
         return JsonResponse({"status": "success", "message": "Webhook received"})
     except json.JSONDecodeError:
         return JsonResponse(

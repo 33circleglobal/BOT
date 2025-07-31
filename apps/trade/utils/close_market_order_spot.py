@@ -3,14 +3,14 @@ from apps.trade.models import Order
 
 import ccxt
 import logging
-from datetime import timezone
+from django.utils import timezone
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 
 def create_connection_with_ccxt(api_key, api_secret):
-    exchange = ccxt.binanceusdm(
+    exchange = ccxt.binance(
         {
             "apiKey": api_key,
             "secret": api_secret,
@@ -39,11 +39,11 @@ def quick_close_spot_position(order: Order, user: User):
 
         user_binance_key = UserKey.objects.get(user=user, is_active=True)
         exchange = create_connection_with_ccxt(
-            api_key=user_binance_key._api_key, api_secret=user_binance_key._api_secret
+            api_key=user_binance_key.api_key, api_secret=user_binance_key.api_secret
         )
 
         symbol = order.symbol
-        quantity = float(order.order_quantity)
+        quantity = float(order.final_quantity)
 
         # Determine side (opposite of original order)
         side = "sell" if order.direction == Order.TradeDirection.LONG else "buy"
@@ -87,17 +87,16 @@ def quick_close_spot_position(order: Order, user: User):
 
         # Update fee information
         if "fee" in close_order:
-            order.fee = float(close_order["fee"]["cost"])
-            order.fee_currency = close_order["fee"]["currency"]
-            if "rate" in close_order["fee"]:
-                order.fee_rate = float(close_order["fee"]["rate"])
+            order.exit_fee = float(close_order["fee"]["cost"])
+            order.exit_fee_currency = close_order["fee"]["currency"]
+            order.total_fee = float(order.total_fee) + float(close_order["fee"]["cost"])
 
         order.save()
 
         logger.info(
             f"Spot position closed for {user.username}: "
             f"{quantity} {symbol} at {close_order['average']}. "
-            f"PNL: {order.pnl:.2f} {order.fee_currency}"
+            f"PNL: {order.pnl:.2f} {order.exit_fee_currency}"
         )
         return True
 

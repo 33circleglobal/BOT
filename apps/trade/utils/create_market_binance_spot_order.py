@@ -9,7 +9,7 @@ logger = logging.getLogger(__name__)
 
 
 def create_connection_with_ccxt(api_key, api_secret):
-    exchange = ccxt.binanceusdm(
+    exchange = ccxt.binance(
         {
             "apiKey": api_key,
             "secret": api_secret,
@@ -36,7 +36,7 @@ def create_binance_spot_order(side, symbol, user):
 
         user_binance_key = UserKey.objects.get(user=user, is_active=True)
         exchange = create_connection_with_ccxt(
-            api_key=user_binance_key._api_key, api_secret=user_binance_key._api_secret
+            api_key=user_binance_key.api_key, api_secret=user_binance_key.api_secret
         )
 
         # Get market info for minimum order quantity check
@@ -77,7 +77,7 @@ def create_binance_spot_order(side, symbol, user):
             )
             return False
 
-        quantity = exchange.amountToPrecision(symbol, quantity)
+        quantity = float(exchange.amountToPrecision(symbol, quantity))
 
         # Check if we have sufficient balance
         if quantity <= 0:
@@ -92,7 +92,6 @@ def create_binance_spot_order(side, symbol, user):
         fee_details = {
             "cost": order["fee"]["cost"],
             "currency": order["fee"]["currency"],
-            "rate": order["fee"]["rate"] if "rate" in order["fee"] else None,
         }
 
         position_direction = (
@@ -104,13 +103,15 @@ def create_binance_spot_order(side, symbol, user):
             entry_price=order["average"],
             direction=position_direction,
             order_quantity=quantity,
-            fee=fee_details["cost"],
-            fee_currency=fee_details["currency"],
-            fee_rate=fee_details["rate"],
+            final_quantity=float(quantity) - float(fee_details["cost"]),
+            entry_fee=fee_details["cost"],
+            entry_fee_currency=fee_details["currency"],
+            total_fee=float(order["average"]) * fee_details["cost"],
             symbol=symbol,
             is_spot=True,
             total_cost=notional_value,
             exchange="binance",
+            user=user,
         )
 
         logger.info(
