@@ -7,6 +7,6 @@ python manage.py migrate
 # python manage.py crontab add
 
 # Start Celery worker in the background
-celery -A config worker -l info -P gevent -c 500 
+# celery -A config worker -l info -P gevent -c 500 
 
-# gunicorn config.wsgi:application -b 0.0.0.0:80 --workers 3
+gunicorn config.wsgi:application -b 0.0.0.0:80 --workers 3
