@@ -32,7 +32,7 @@ def get_symbol_current_market_price(symbol, exchange):
 def create_binance_spot_order(side, symbol, user):
     try:
         side = side.lower()
-        position = 20
+        position = 100
 
         user_binance_key = UserKey.objects.get(user=user, is_active=True)
         exchange = create_connection_with_ccxt(
