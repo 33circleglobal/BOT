@@ -46,6 +46,7 @@ INSTALLED_APPS = [
     "django.contrib.sessions",
     "django.contrib.messages",
     "django.contrib.staticfiles",
+    "django_crontab",
     "apps.accounts",
     "apps.trade",
 ]
@@ -160,3 +161,12 @@ CELERY_BROKER_URL = config("CELERY_BROKER_URL")
 FERNET_SECRET_KEY = config("FERNET_SECRET_KEY")
 
 LOGIN_URL = "/login/"
+
+
+CRONJOBS = [
+    (
+        "*/5 * * * *",
+        "apps.trade.crons.refresh_stop_loss.refresh_orders",
+        ">> /tmp/refresh_stop_loss.log",
+    )
+]
