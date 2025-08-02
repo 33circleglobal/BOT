@@ -2,7 +2,7 @@ from django.db import models
 from apps.accounts.models import User
 
 
-class Order(models.Model):
+class SpotOrder(models.Model):
     class TradeDirection(models.TextChoices):
         LONG = "LONG", "Long"
         SHORT = "SHORT", "Short"
@@ -61,7 +61,7 @@ class Order(models.Model):
     closed_at = models.DateTimeField(null=True, blank=True)
 
     class Meta:
-        db_table = "orders"
+        db_table = "spot_orders"
         ordering = ["-created_at"]
         indexes = [
             models.Index(fields=["user", "status"]),

@@ -1,5 +1,5 @@
 from apps.accounts.models import User, UserKey
-from apps.trade.models import Order
+from apps.trade.models import SpotOrder
 
 import ccxt
 import logging
@@ -95,10 +95,12 @@ def create_binance_spot_order(side, symbol, user):
         }
 
         position_direction = (
-            Order.TradeDirection.LONG if side == "buy" else Order.TradeDirection.SHORT
+            SpotOrder.TradeDirection.LONG
+            if side == "buy"
+            else SpotOrder.TradeDirection.SHORT
         )
 
-        Order.objects.create(
+        SpotOrder.objects.create(
             order_id=order["id"],
             entry_price=order["average"],
             direction=position_direction,

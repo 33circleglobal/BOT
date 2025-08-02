@@ -20,10 +20,15 @@ def trading_view_webhook(request):
         payload = json.loads(request.body)
         symbol = payload.get("symbol")
         side = payload.get("side")
-        if side == "buy":
-            create_order_of_user_controller.delay(side, symbol)
+        market = payload.get("market", None)
+        if market == "futures":
+            create_order_of_user_controller.delay(side, symbol, market)
+            close_order_of_user_controller.delay(side, symbol, market)
         else:
-            close_order_of_user_controller.delay(side, symbol)
+            if side == "buy":
+                create_order_of_user_controller.delay(side, symbol, market)
+            else:
+                close_order_of_user_controller.delay(side, symbol, market)
         return JsonResponse({"status": "success", "message": "Webhook received"})
     except json.JSONDecodeError:
         return JsonResponse(

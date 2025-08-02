@@ -1,5 +1,5 @@
 from apps.accounts.models import User, UserKey
-from apps.trade.models import Order
+from apps.trade.models import FutureOrder
 
 import ccxt
 import logging
@@ -51,8 +51,8 @@ def create_binance_future_order(side, symbol, user):
     try:
         margin_mode = "isolated"
         side = side
-        position = 20
-        leverage = 10
+        position = 25
+        leverage = 5
 
         user_binance_key = UserKey.objects.get(user=user, is_active=True)
         exchange = create_connection_with_ccxt(
@@ -75,17 +75,41 @@ def create_binance_future_order(side, symbol, user):
             symbol=symbol, side=side, type="market", amount=quantity
         )
 
-        position_direction = (
-            Order.TradeDirection.LONG if side == "buy" else Order.TradeDirection.SHORT
+        inverted_side = "sell" if side == "buy" else "buy"
+
+        stop_price = (
+            round(float(order["average"]) - float(order["average"]) * 0.01, 4)
+            if side == "buy"
+            else round(float(order["average"]) + float(order["average"]) * 0.01, 4)
         )
 
-        Order.objects.create(
-            order_id=order["id"],
-            entry_price=order["average"],
-            direction=position_direction,
-            order_quantity=quantity,
-            fee=order["fee"],
+        sl_order = exchange.create_order(
             symbol=symbol,
+            side=inverted_side,
+            type="STOP_MARKET",
+            amount=quantity,
+            params={"stopPrice": stop_price, "reduceOnly": True},
+        )
+
+        position_direction = (
+            FutureOrder.TradeDirection.LONG
+            if side == "buy"
+            else FutureOrder.TradeDirection.SHORT
+        )
+
+        FutureOrder.objects.create(
+            order_id=order["id"],
+            symbol=symbol,
+            direction=position_direction,
+            leverage=5,
+            order_quantity=quantity,
+            entry_price=order["average"],
+            entry_fee=order["fee"]["cost"],
+            entry_fee_currency=order["fee"]["currency"],
+            total_fee=order["fee"]["cost"],
+            stop_loss_order_id=sl_order["id"],
+            stop_loss_price=sl_order["price"],
+            user=user,
         )
 
         return print(f"Order created successfully for user {user.username}")

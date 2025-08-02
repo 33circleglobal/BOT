@@ -1,5 +1,5 @@
 from apps.accounts.models import User, UserKey
-from apps.trade.models import Order
+from apps.trade.models import FutureOrder
 
 import ccxt
 import logging
@@ -19,7 +19,7 @@ def create_connection_with_ccxt(api_key, api_secret):
     return exchange
 
 
-def quick_close_position(order: Order, user: User):
+def quick_close_position(order: FutureOrder, user: User):
     try:
         user_binance_key = UserKey.objects.get(user=user, is_active=True)
         exchange = create_connection_with_ccxt(
@@ -27,7 +27,7 @@ def quick_close_position(order: Order, user: User):
         )
         symbol = order.symbol
         quantity = order.order_quantity
-        side = "sell" if order.direction == Order.TradeDirection.LONG else "buy"
+        side = "sell" if order.direction == FutureOrder.TradeDirection.LONG else "buy"
 
         close_order = exchange.create_order(
             symbol=symbol,
@@ -37,10 +37,20 @@ def quick_close_position(order: Order, user: User):
             params={"reduceOnly": True},
         )
 
-        order.exit_price = close_order["average"]
-        order.status = Order.TradeStatus.CLOSED
+        cancel_sl_order = exchange.cancel_order(
+            id=order.stop_loss_order_id,
+            symbol=symbol,
+        )
 
-        if order.direction == Order.TradeDirection.LONG:
+        order.tp_order_id = close_order["id"]
+        order.tp_price = close_order["average"]
+        order.status = FutureOrder.TradeStatus.CLOSED
+        order.tp_status = FutureOrder.TradeStatus.CLOSED
+        order.tp_fee = close_order["fee"]["cost"]
+        order.total_fee = float(order.total_fee) + float(close_order["fee"]["cost"])
+        order.stop_loss_status = FutureOrder.TradeStatus.CANCELLED
+
+        if order.direction == FutureOrder.TradeDirection.LONG:
             entry_price = float(order.entry_price)
             exit_price = float(close_order["average"])
             pnl = (exit_price - entry_price) * quantity
@@ -50,6 +60,7 @@ def quick_close_position(order: Order, user: User):
             exit_price = float(close_order["average"])
             pnl = (entry_price - exit_price) * quantity
             order.pnl = pnl
+        order.pnl_percentage = (float(order.pnl) / float(order.entry_price)) * 100
         order.save()
         return print(f"Order closed successfully for user {user.username}")
     except Exception as e:

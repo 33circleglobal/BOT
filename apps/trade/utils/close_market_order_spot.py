@@ -1,5 +1,5 @@
 from apps.accounts.models import User, UserKey
-from apps.trade.models import Order
+from apps.trade.models import SpotOrder
 
 import ccxt
 import logging
@@ -30,7 +30,7 @@ def get_symbol_current_market_price(symbol, exchange):
         return False
 
 
-def quick_close_spot_position(order: Order, user: User):
+def quick_close_spot_position(order: SpotOrder, user: User):
     try:
         # Validate order type
         if not order.is_spot:
@@ -46,7 +46,7 @@ def quick_close_spot_position(order: Order, user: User):
         quantity = float(order.final_quantity)
 
         # Determine side (opposite of original order)
-        side = "sell" if order.direction == Order.TradeDirection.LONG else "buy"
+        side = "sell" if order.direction == SpotOrder.TradeDirection.LONG else "buy"
 
         # Get current market price for validation
         current_price = get_symbol_current_market_price(symbol, exchange)
@@ -70,14 +70,14 @@ def quick_close_spot_position(order: Order, user: User):
 
         # Update order status and details
         order.exit_price = close_order["average"]
-        order.status = Order.TradeStatus.CLOSED
+        order.status = SpotOrder.TradeStatus.CLOSED
         order.closed_at = timezone.now()
 
         # Calculate PNL
         entry_value = float(order.entry_price) * quantity
         exit_value = float(close_order["average"]) * quantity
 
-        if order.direction == Order.TradeDirection.LONG:
+        if order.direction == SpotOrder.TradeDirection.LONG:
             order.pnl = exit_value - entry_value
         else:
             order.pnl = entry_value - exit_value
