@@ -22,8 +22,9 @@ def create_connection_with_ccxt(api_key, api_secret):
 def quick_close_position(order: FutureOrder, user: User):
     try:
         user_binance_key = UserKey.objects.get(user=user, is_active=True)
+        # Use decrypted credentials via properties
         exchange = create_connection_with_ccxt(
-            api_key=user_binance_key._api_key, api_secret=user_binance_key._api_secret
+            api_key=user_binance_key.api_key, api_secret=user_binance_key.api_secret
         )
         symbol = order.symbol
         quantity = order.order_quantity
@@ -46,22 +47,27 @@ def quick_close_position(order: FutureOrder, user: User):
         order.tp_price = close_order["average"]
         order.status = FutureOrder.TradeStatus.CLOSED
         order.tp_status = FutureOrder.TradeStatus.CLOSED
-        order.tp_fee = close_order["fee"]["cost"]
-        order.total_fee = float(order.total_fee) + float(close_order["fee"]["cost"])
+        # Fee info may be missing depending on exchange response
+        fee = close_order.get("fee") or {}
+        fee_cost = fee.get("cost", 0)
+        order.tp_fee = fee_cost
+        order.total_fee = float(order.total_fee) + float(fee_cost)
         order.stop_loss_status = FutureOrder.TradeStatus.CANCELLED
 
         if order.direction == FutureOrder.TradeDirection.LONG:
             entry_price = float(order.entry_price)
             exit_price = float(close_order["average"])
-            pnl = (exit_price - entry_price) * quantity
+            pnl = float(exit_price - entry_price) * float(quantity)
             order.pnl = pnl
         else:
             entry_price = float(order.entry_price)
             exit_price = float(close_order["average"])
-            pnl = (entry_price - exit_price) * quantity
+            pnl = float(exit_price - entry_price) * float(quantity)
             order.pnl = pnl
         order.pnl_percentage = (float(order.pnl) / float(order.entry_price)) * 100
         order.save()
         return print(f"Order closed successfully for user {user.username}")
     except Exception as e:
-        e
+        logger.error(
+            f"Error closing futures position for {user.username}: {e}", exc_info=True
+        )

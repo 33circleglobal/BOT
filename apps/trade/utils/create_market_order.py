@@ -56,7 +56,7 @@ def create_binance_future_order(side, symbol, user):
 
         user_binance_key = UserKey.objects.get(user=user, is_active=True)
         exchange = create_connection_with_ccxt(
-            api_key=user_binance_key._api_key, api_secret=user_binance_key._api_secret
+            api_key=user_binance_key.api_key, api_secret=user_binance_key.api_secret
         )
 
         current_price_of_symbol = get_symbol_current_market_price(
@@ -97,6 +97,17 @@ def create_binance_future_order(side, symbol, user):
             else FutureOrder.TradeDirection.SHORT
         )
 
+        fee = order.get("fee") or {}
+        entry_fee = fee.get("cost", 0)
+        entry_fee_currency = fee.get("currency", "USDT")
+        total_fee = fee.get("cost", 0)
+
+        stop_loss_price = (
+            sl_order.get("price")
+            or sl_order.get("stopPrice")
+            or sl_order.get("triggerPrice")
+        )
+
         FutureOrder.objects.create(
             order_id=order["id"],
             symbol=symbol,
@@ -104,15 +115,18 @@ def create_binance_future_order(side, symbol, user):
             leverage=5,
             order_quantity=quantity,
             entry_price=order["average"],
-            entry_fee=order["fee"]["cost"],
-            entry_fee_currency=order["fee"]["currency"],
-            total_fee=order["fee"]["cost"],
+            entry_fee=entry_fee,
+            entry_fee_currency=entry_fee_currency,
+            total_fee=total_fee,
             stop_loss_order_id=sl_order["id"],
-            stop_loss_price=sl_order["price"],
+            stop_loss_price=stop_loss_price,
+            # placeholder; will be set when position is closed
+            tp_order_id="",
             user=user,
         )
 
         return print(f"Order created successfully for user {user.username}")
 
     except Exception as e:
+        print("Caught exception:", e)
         e

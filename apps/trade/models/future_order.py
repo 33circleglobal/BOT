@@ -34,7 +34,7 @@ class FutureOrder(models.Model):
         max_length=20, choices=TradeStatus.choices, default=TradeStatus.POSITION
     )
     # take profit
-    tp_order_id = models.CharField(max_length=100, unique=True)
+    tp_order_id = models.CharField(max_length=100)
     tp_price = models.DecimalField(max_digits=20, decimal_places=10, default=0)
     tp_fee = models.DecimalField(max_digits=20, decimal_places=10, default=0)
     tp_status = models.CharField(

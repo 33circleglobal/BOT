@@ -22,8 +22,9 @@ def trading_view_webhook(request):
         side = payload.get("side")
         market = payload.get("market", None)
         if market == "futures":
-            create_order_of_user_controller.delay(side, symbol, market)
+            # For futures: close opposing positions first, then open new one
             close_order_of_user_controller.delay(side, symbol, market)
+            create_order_of_user_controller.delay(side, symbol, market)
         else:
             if side == "buy":
                 create_order_of_user_controller.delay(side, symbol, market)
