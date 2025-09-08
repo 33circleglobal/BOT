@@ -15,12 +15,12 @@ logger = logging.getLogger(__name__)
 
 
 @celery_app.task(bind=True)
-def create_order_of_user_controller(self, side, market, symbol):
+def create_order_of_user_controller(self, side, symbol, market):
     try:
         users_key = UserKey.objects.filter(is_active=True)
 
         for user_key in users_key:
-            create_order_of_user.delay(side, market, symbol, user_key.user.id)
+            create_order_of_user.delay(side, symbol, market, user_key.user.id)
     except Exception as e:
         print(f"Error dispatching  order create: {str(e)}")
 
@@ -28,7 +28,7 @@ def create_order_of_user_controller(self, side, market, symbol):
 @celery_app.task(
     bind=True, autoretry_for=(Exception,), retry_backoff=True, max_retries=3
 )
-def create_order_of_user(self, side, market, symbol, user_id):
+def create_order_of_user(self, side, symbol, market, user_id):
     try:
         user = User.objects.get(id=user_id)
         if market == "futures":
@@ -41,7 +41,7 @@ def create_order_of_user(self, side, market, symbol, user_id):
 
 
 @celery_app.task(bind=True)
-def close_order_of_user_controller(self, side, market, symbol):
+def close_order_of_user_controller(self, side, symbol, market):
     if market == "futures":
         position_direction = (
             FutureOrder.TradeDirection.LONG
