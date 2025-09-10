@@ -47,6 +47,19 @@ def set_margin_mode(exchange, symbol, margin_mode):
         return False
 
 
+def apply_leverage(exchange, symbol, leverage):
+    try:
+        exchange.fapiprivate_post_leverage(
+            {
+                "symbol": exchange.market_id(symbol),
+                "leverage": leverage,
+            }
+        )
+    except Exception as e:
+        logger.error(f"Error applying leverage for {symbol}: {e}")
+        return False
+
+
 def create_binance_future_order(side, symbol, user):
     try:
         margin_mode = "isolated"
@@ -55,6 +68,7 @@ def create_binance_future_order(side, symbol, user):
         leverage = 5
 
         user_binance_key = UserKey.objects.get(user=user, is_active=True)
+        print(user_binance_key.api_key, user_binance_key.api_secret)
         exchange = create_connection_with_ccxt(
             api_key=user_binance_key.api_key, api_secret=user_binance_key.api_secret
         )
@@ -70,6 +84,7 @@ def create_binance_future_order(side, symbol, user):
         quantity = exchange.amountToPrecision(symbol, quantity)
 
         set_margin_mode(exchange, symbol, margin_mode)
+        apply_leverage(exchange, symbol, leverage)
 
         order = exchange.create_order(
             symbol=symbol, side=side, type="market", amount=quantity

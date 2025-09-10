@@ -182,6 +182,12 @@
       <a href="{% url 'accounts:home' %}" class="{% if request.resolver_match.url_name == 'home' %}active{% endif %}">
         <i class="bi bi-grid"></i><span>Dashboard</span><div class="tooltip-custom">Dashboard</div>
       </a>
+      <a href="{% url 'accounts:stats' %}" class="{% if request.resolver_match.url_name == 'stats' %}active{% endif %}">
+        <i class="bi bi-graph-up"></i><span>Stats</span><div class="tooltip-custom">Stats</div>
+      </a>
+      <a href="{% url 'accounts:history' %}" class="{% if request.resolver_match.url_name == 'history' %}active{% endif %}">
+        <i class="bi bi-clock-history"></i><span>History</span><div class="tooltip-custom">History</div>
+      </a>
       <a href="#" class="{% if request.resolver_match.url_name == 'crypto_news_list' %}active{% endif %}">
         <i class="bi bi-calendar2-week"></i><span>News</span><div class="tooltip-custom">News</div>
       </a>
