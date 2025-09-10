@@ -64,7 +64,7 @@ def create_binance_future_order(side, symbol, user):
     try:
         margin_mode = "isolated"
         side = side
-        position = 100
+        position = 90
         leverage = 5
 
         user_binance_key = UserKey.objects.get(user=user, is_active=True)
