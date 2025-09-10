@@ -1,0 +1,125 @@
+{% extends "base.html" %}
+
+{% block content %}
+<div class="container-fluid">
+  <div class="card border-0 shadow-sm mb-3">
+    <div class="card-body">
+      <form class="row g-2 align-items-end" method="get">
+        <div class="col-12 col-md-3">
+          <label class="form-label">Market</label>
+          <select name="market" class="form-select">
+            <option value="both" {% if market == 'both' %}selected{% endif %}>Both</option>
+            <option value="spot" {% if market == 'spot' %}selected{% endif %}>Spot</option>
+            <option value="futures" {% if market == 'futures' %}selected{% endif %}>Futures</option>
+          </select>
+        </div>
+        <div class="col-12 col-md-3">
+          <label class="form-label">Symbol</label>
+          <input name="symbol" value="{{ symbol }}" class="form-control" placeholder="e.g. BTCUSDT"/>
+        </div>
+        <div class="col-12 col-md-3">
+          <label class="form-label">Days</label>
+          <select name="days" class="form-select">
+            <option value="7" {% if days == 7 %}selected{% endif %}>7</option>
+            <option value="30" {% if days == 30 %}selected{% endif %}>30</option>
+            <option value="90" {% if days == 90 %}selected{% endif %}>90</option>
+          </select>
+        </div>
+        <div class="col-12 col-md-3">
+          <button class="btn btn-primary w-100">Apply</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <div class="row g-3 mb-3">
+    <div class="col-12 col-xl-6">
+      <div class="card shadow-sm border-0 h-100">
+        <div class="card-header bg-white border-0 fw-semibold">Daily PnL</div>
+        <div class="card-body"><canvas id="dailyChart" height="90"></canvas></div>
+      </div>
+    </div>
+    <div class="col-12 col-xl-6">
+      <div class="card shadow-sm border-0 h-100">
+        <div class="card-header bg-white border-0 fw-semibold">Cumulative PnL</div>
+        <div class="card-body"><canvas id="cumChart" height="90"></canvas></div>
+      </div>
+    </div>
+  </div>
+
+  <div class="row g-3">
+    <div class="col-12">
+      <div class="card shadow-sm border-0">
+        <div class="card-header bg-white border-0 fw-semibold">Performance by Symbol</div>
+        <div class="card-body">
+          <div class="table-responsive">
+            <table class="table table-sm align-middle">
+              <thead>
+                <tr>
+                  <th>Symbol</th>
+                  <th>Trades</th>
+                  <th>PnL (Spot)</th>
+                  <th>PnL (Futures)</th>
+                </tr>
+              </thead>
+              <tbody>
+                {% for row in spot_by_symbol %}
+                  {% with s=row.symbol %}
+                  <tr>
+                    <td>{{ s }}</td>
+                    <td>{{ row.trades }}</td>
+                    <td>{{ row.pnl|floatformat:2 }}</td>
+                    <td>
+                      {% for fr in fut_by_symbol %}
+                        {% if fr.symbol == s %}{{ fr.pnl|floatformat:2 }}{% endif %}
+                      {% endfor %}
+                    </td>
+                  </tr>
+                  {% endwith %}
+                {% empty %}
+                  {% for fr in fut_by_symbol %}
+                    <tr>
+                      <td>{{ fr.symbol }}</td>
+                      <td>{{ fr.trades }}</td>
+                      <td>0.00</td>
+                      <td>{{ fr.pnl|floatformat:2 }}</td>
+                    </tr>
+                  {% endfor %}
+                {% endfor %}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+<script>
+  const labels = {{ labels_json|safe }};
+  const spot = {{ spot_series_json|safe }};
+  const fut = {{ fut_series_json|safe }};
+  const cumS = {{ cum_spot_json|safe }};
+  const cumF = {{ cum_fut_json|safe }};
+
+  new Chart(document.getElementById('dailyChart').getContext('2d'), {
+    type: 'line',
+    data: { labels, datasets: [
+      { label: 'Spot', data: spot, borderColor: '#0d6efd', backgroundColor: 'rgba(13,110,253,0.1)', tension: 0.3 },
+      { label: 'Futures', data: fut, borderColor: '#20c997', backgroundColor: 'rgba(32,201,151,0.1)', tension: 0.3 },
+    ]},
+    options: { responsive: true, interaction: { mode: 'index', intersect: false }, scales: { y: { beginAtZero: true } } }
+  });
+
+  new Chart(document.getElementById('cumChart').getContext('2d'), {
+    type: 'line',
+    data: { labels, datasets: [
+      { label: 'Spot Cumulative', data: cumS, borderColor: '#6610f2', backgroundColor: 'rgba(102,16,242,0.1)', tension: 0.3 },
+      { label: 'Futures Cumulative', data: cumF, borderColor: '#fd7e14', backgroundColor: 'rgba(253,126,20,0.1)', tension: 0.3 },
+    ]},
+    options: { responsive: true, interaction: { mode: 'index', intersect: false }, scales: { y: { beginAtZero: true } } }
+  });
+</script>
+{% endblock %}
+

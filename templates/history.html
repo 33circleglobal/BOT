@@ -1,0 +1,94 @@
+{% extends "base.html" %}
+
+{% block content %}
+<div class="container-fluid">
+  <div class="card border-0 shadow-sm mb-3">
+    <div class="card-body">
+      <form class="row g-2 align-items-end" method="get">
+        <div class="col-12 col-md-2">
+          <label class="form-label">Market</label>
+          <select name="market" class="form-select">
+            <option value="both" {% if market == 'both' %}selected{% endif %}>Both</option>
+            <option value="spot" {% if market == 'spot' %}selected{% endif %}>Spot</option>
+            <option value="futures" {% if market == 'futures' %}selected{% endif %}>Futures</option>
+          </select>
+        </div>
+        <div class="col-12 col-md-2">
+          <label class="form-label">Status</label>
+          <select name="status" class="form-select">
+            <option value="" {% if not status %}selected{% endif %}>Any</option>
+            <option value="OPEN" {% if status == 'OPEN' %}selected{% endif %}>Open</option>
+            <option value="POSITION" {% if status == 'POSITION' %}selected{% endif %}>Position</option>
+            <option value="CLOSED" {% if status == 'CLOSED' %}selected{% endif %}>Closed</option>
+            <option value="CANCELLED" {% if status == 'CANCELLED' %}selected{% endif %}>Cancelled</option>
+            <option value="FAILED" {% if status == 'FAILED' %}selected{% endif %}>Failed</option>
+          </select>
+        </div>
+        <div class="col-12 col-md-2">
+          <label class="form-label">Symbol</label>
+          <input name="symbol" value="{{ symbol }}" class="form-control" placeholder="e.g. BTCUSDT"/>
+        </div>
+        <div class="col-12 col-md-2">
+          <label class="form-label">From</label>
+          <input name="from" value="{{ date_from }}" class="form-control" type="datetime-local"/>
+        </div>
+        <div class="col-12 col-md-2">
+          <label class="form-label">To</label>
+          <input name="to" value="{{ date_to }}" class="form-control" type="datetime-local"/>
+        </div>
+        <div class="col-12 col-md-2">
+          <button class="btn btn-primary w-100">Filter</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <div class="card border-0 shadow-sm">
+    <div class="card-body">
+      <div class="table-responsive">
+        <table class="table table-hover table-sm align-middle">
+          <thead>
+            <tr>
+              <th>Time</th>
+              <th>Market</th>
+              <th>Symbol</th>
+              <th>Dir</th>
+              <th>Status</th>
+              <th>Qty</th>
+              <th>Entry</th>
+              <th>Exit</th>
+              <th>PnL</th>
+              <th>PnL %</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for r in records %}
+            <tr>
+              <td class="text-nowrap">{{ r.created_at|date:"Y-m-d H:i" }}</td>
+              <td><span class="badge bg-dark">{{ r.market }}</span></td>
+              <td>{{ r.symbol }}</td>
+              <td>{{ r.direction }}</td>
+              <td>
+                {% if r.status == 'CLOSED' %}<span class="badge bg-success">{{ r.status }}</span>
+                {% elif r.status == 'POSITION' %}<span class="badge bg-warning text-dark">{{ r.status }}</span>
+                {% elif r.status == 'OPEN' %}<span class="badge bg-info text-dark">{{ r.status }}</span>
+                {% else %}<span class="badge bg-secondary">{{ r.status }}</span>
+                {% endif %}
+              </td>
+              <td>{{ r.quantity|floatformat:4 }}</td>
+              <td>{{ r.entry_price|default_if_none:"-"|floatformat:4 }}</td>
+              <td>{% if r.exit_price %}{{ r.exit_price|floatformat:4 }}{% else %}-{% endif %}</td>
+              <td class="{% if r.pnl >= 0 %}text-success{% else %}text-danger{% endif %}">{{ r.pnl|floatformat:2 }}</td>
+              <td class="{% if r.pnl_pct >= 0 %}text-success{% else %}text-danger{% endif %}">{{ r.pnl_pct|floatformat:2 }}%</td>
+            </tr>
+            {% empty %}
+            <tr><td colspan="10" class="text-center text-muted">No records</td></tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+</div>
+{% endblock %}
+

@@ -1,1 +1,148 @@
 {% extends "base.html" %}
+{% load static %}
+
+{% block content %}
+<div class="container-fluid">
+  <div class="row g-3 mb-3">
+    <div class="col-12 col-md-6 col-xl-3">
+      <div class="card shadow-sm border-0 h-100">
+        <div class="card-body">
+          <div class="d-flex justify-content-between align-items-center">
+            <div>
+              <div class="text-muted fw-semibold">Spot PnL</div>
+              <div class="fs-4 fw-bold">{{ spot_pnl|floatformat:2 }} USDT</div>
+            </div>
+            <div class="text-success fs-3"><i class="bi bi-currency-dollar"></i></div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="col-12 col-md-6 col-xl-3">
+      <div class="card shadow-sm border-0 h-100">
+        <div class="card-body">
+          <div class="d-flex justify-content-between align-items-center">
+            <div>
+              <div class="text-muted fw-semibold">Futures PnL</div>
+              <div class="fs-4 fw-bold">{{ fut_pnl|floatformat:2 }} USDT</div>
+            </div>
+            <div class="text-primary fs-3"><i class="bi bi-graph-up-arrow"></i></div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="col-12 col-md-6 col-xl-3">
+      <div class="card shadow-sm border-0 h-100">
+        <div class="card-body">
+          <div class="d-flex justify-content-between align-items-center">
+            <div>
+              <div class="text-muted fw-semibold">Win Rate (Spot/Fut)</div>
+              <div class="fs-4 fw-bold">{{ spot_win_rate }}% / {{ fut_win_rate }}%</div>
+            </div>
+            <div class="text-warning fs-3"><i class="bi bi-trophy"></i></div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="col-12 col-md-6 col-xl-3">
+      <div class="card shadow-sm border-0 h-100">
+        <div class="card-body">
+          <div class="d-flex justify-content-between align-items-center">
+            <div>
+              <div class="text-muted fw-semibold">Open (Spot/Fut)</div>
+              <div class="fs-4 fw-bold">{{ spot_open }} / {{ fut_open }}</div>
+            </div>
+            <div class="text-danger fs-3"><i class="bi bi-lightning"></i></div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="row g-3 mb-3">
+    <div class="col-12 col-xl-8">
+      <div class="card shadow-sm border-0 h-100">
+        <div class="card-header bg-white border-0 fw-semibold">Daily PnL (Last 30 days)</div>
+        <div class="card-body">
+          <canvas id="pnlChart" height="90"></canvas>
+        </div>
+      </div>
+    </div>
+    <div class="col-12 col-xl-4">
+      <div class="card shadow-sm border-0 h-100">
+        <div class="card-header bg-white border-0 fw-semibold">Top Symbols (Trades)</div>
+        <div class="card-body">
+          <canvas id="symbolChart" height="90"></canvas>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="row g-3">
+    <div class="col-12 col-lg-6">
+      <div class="card shadow-sm border-0 h-100">
+        <div class="card-body">
+          <div class="d-flex justify-content-between align-items-center">
+            <div>
+              <div class="text-muted fw-semibold">Spot Volume</div>
+              <div class="fs-5 fw-bold">{{ spot_volume|floatformat:2 }} USDT</div>
+            </div>
+            <div class="text-info fs-3"><i class="bi bi-cash-stack"></i></div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="col-12 col-lg-6">
+      <div class="card shadow-sm border-0 h-100">
+        <div class="card-body">
+          <div class="d-flex justify-content-between align-items-center">
+            <div>
+              <div class="text-muted fw-semibold">Futures Notional</div>
+              <div class="fs-5 fw-bold">{{ fut_volume|floatformat:2 }} USDT</div>
+            </div>
+            <div class="text-secondary fs-3"><i class="bi bi-bar-chart"></i></div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+<script>
+  const labels = {{ labels_json|safe }};
+  const spotData = {{ spot_series_json|safe }};
+  const futData = {{ fut_series_json|safe }};
+
+  const ctx = document.getElementById('pnlChart').getContext('2d');
+  new Chart(ctx, {
+    type: 'line',
+    data: {
+      labels: labels,
+      datasets: [
+        { label: 'Spot', data: spotData, borderColor: '#0d6efd', backgroundColor: 'rgba(13,110,253,0.1)', tension: 0.3 },
+        { label: 'Futures', data: futData, borderColor: '#20c997', backgroundColor: 'rgba(32,201,151,0.1)', tension: 0.3 },
+      ]
+    },
+    options: {
+      responsive: true,
+      interaction: { mode: 'index', intersect: false },
+      scales: { y: { beginAtZero: true } }
+    }
+  });
+
+  const spotSymbols = {{ spot_by_symbol|safe }};
+  const futSymbols = {{ fut_by_symbol|safe }};
+  const combined = {};
+  spotSymbols.forEach(i => combined[i.symbol] = (combined[i.symbol]||0) + i.ct);
+  futSymbols.forEach(i => combined[i.symbol] = (combined[i.symbol]||0) + i.ct);
+  const keys = Object.keys(combined);
+  const vals = keys.map(k => combined[k]);
+
+  const sctx = document.getElementById('symbolChart').getContext('2d');
+  new Chart(sctx, {
+    type: 'bar',
+    data: { labels: keys, datasets: [{ label: 'Trades', data: vals, backgroundColor: '#6f42c1' }] },
+    options: { indexAxis: 'y', scales: { x: { beginAtZero: true } } }
+  });
+</script>
+{% endblock %}
