@@ -1,34 +1,17 @@
 from apps.accounts.models import User, UserKey
 from apps.trade.models import FutureOrder
+from apps.trade.utils.common import (
+    make_futures_exchange,
+    get_symbol_last_price,
+    compute_default_sl,
+    opposite_side,
+)
 
 import ccxt
 import logging
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
-
-
-def create_connection_with_ccxt(api_key, api_secret):
-    exchange = ccxt.binanceusdm(
-        {
-            "apiKey": api_key,
-            "secret": api_secret,
-        }
-    )
-    exchange.load_markets()
-    return exchange
-
-
-def get_symbol_current_market_price(symbol, exchange):
-    try:
-        ticker = exchange.fetch_ticker(symbol)
-        current_price = ticker["last"]
-        return current_price
-    except Exception as e:
-        logger.error(f"Error fetching ticker for {symbol}: {e}")
-        return False
-
-
 def set_margin_mode(exchange, symbol, margin_mode):
     try:
         info = exchange.fapiprivatev2_get_positionrisk(
@@ -60,22 +43,27 @@ def apply_leverage(exchange, symbol, leverage):
         return False
 
 
-def create_binance_future_order(side, symbol, user):
+def create_binance_future_order(
+    side: str,
+    symbol: str,
+    user: User,
+    *,
+    sl: float | None = None,
+    tp: float | None = None,
+    leverage: int = 5,
+    position_pct: float = 90.0,
+):
     try:
         margin_mode = "isolated"
-        side = side
-        position = 90
-        leverage = 5
+        side = side.lower()
+        position = position_pct
 
         user_binance_key = UserKey.objects.get(user=user, is_active=True)
-        print(user_binance_key.api_key, user_binance_key.api_secret)
-        exchange = create_connection_with_ccxt(
+        exchange = make_futures_exchange(
             api_key=user_binance_key.api_key, api_secret=user_binance_key.api_secret
         )
 
-        current_price_of_symbol = get_symbol_current_market_price(
-            symbol=symbol, exchange=exchange
-        )
+        current_price_of_symbol = get_symbol_last_price(exchange, symbol)
         balance = exchange.fetch_balance()
         user_balance = balance["free"]["USDT"]
 
@@ -86,25 +74,41 @@ def create_binance_future_order(side, symbol, user):
         set_margin_mode(exchange, symbol, margin_mode)
         apply_leverage(exchange, symbol, leverage)
 
-        order = exchange.create_order(
-            symbol=symbol, side=side, type="market", amount=quantity
-        )
+        order = exchange.create_order(symbol=symbol, side=side, type="market", amount=quantity)
 
-        inverted_side = "sell" if side == "buy" else "buy"
+        inv_side = opposite_side(side)
+        # Validate manual SL/TP against current price to avoid immediate triggers
+        cur = float(current_price_of_symbol)
+        if sl is not None:
+            s = float(sl)
+            if (side == "buy" and s >= cur) or (side == "sell" and s <= cur):
+                raise ValueError("Invalid SL relative to current price")
+        if tp is not None:
+            t = float(tp)
+            if (side == "buy" and t <= cur) or (side == "sell" and t >= cur):
+                raise ValueError("Invalid TP relative to current price")
 
-        stop_price = (
-            round(float(order["average"]) - float(order["average"]) * 0.01, 4)
-            if side == "buy"
-            else round(float(order["average"]) + float(order["average"]) * 0.01, 4)
-        )
-
+        # Stop loss: provided or default 1%
+        stop_price = float(sl) if sl is not None else compute_default_sl(order["average"], side)
         sl_order = exchange.create_order(
             symbol=symbol,
-            side=inverted_side,
+            side=inv_side,
             type="STOP_MARKET",
             amount=quantity,
-            params={"stopPrice": stop_price, "reduceOnly": True},
+            params={"stopPrice": float(exchange.priceToPrecision(symbol, stop_price)), "reduceOnly": True},
         )
+
+        # Optional Take Profit
+        tp_order = None
+        if tp is not None:
+            tp_price = float(exchange.priceToPrecision(symbol, float(tp)))
+            tp_order = exchange.create_order(
+                symbol=symbol,
+                side=inv_side,
+                type="TAKE_PROFIT_MARKET",
+                amount=quantity,
+                params={"stopPrice": tp_price, "reduceOnly": True},
+            )
 
         position_direction = (
             FutureOrder.TradeDirection.LONG
@@ -117,13 +121,9 @@ def create_binance_future_order(side, symbol, user):
         entry_fee_currency = fee.get("currency", "USDT")
         total_fee = fee.get("cost", 0)
 
-        stop_loss_price = (
-            sl_order.get("price")
-            or sl_order.get("stopPrice")
-            or sl_order.get("triggerPrice")
-        )
+        stop_loss_price = sl_order.get("price") or sl_order.get("stopPrice") or sl_order.get("triggerPrice")
 
-        FutureOrder.objects.create(
+        fobj = FutureOrder.objects.create(
             order_id=order["id"],
             symbol=symbol,
             direction=position_direction,
@@ -135,13 +135,14 @@ def create_binance_future_order(side, symbol, user):
             total_fee=total_fee,
             stop_loss_order_id=sl_order["id"],
             stop_loss_price=stop_loss_price,
-            # placeholder; will be set when position is closed
-            tp_order_id="",
+            # placeholder; may be updated below
+            tp_order_id=tp_order["id"] if tp_order else "",
+            tp_price=(tp_order.get("stopPrice") if tp_order else 0),
             user=user,
         )
 
-        return print(f"Order created successfully for user {user.username}")
+        return True
 
     except Exception as e:
-        print("Caught exception:", e)
-        e
+        logger.error(f"Error creating futures order for {user.username}: {e}", exc_info=True)
+        return False

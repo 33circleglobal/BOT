@@ -1,34 +1,36 @@
 from apps.accounts.models import User, UserKey
 from apps.trade.models import FutureOrder
+from apps.trade.utils.common import make_futures_exchange
 
 import ccxt
 import logging
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
-
-
-def create_connection_with_ccxt(api_key, api_secret):
-    exchange = ccxt.binanceusdm(
-        {
-            "apiKey": api_key,
-            "secret": api_secret,
-        }
-    )
-    exchange.load_markets()
-    return exchange
-
-
 def quick_close_position(order: FutureOrder, user: User):
     try:
         user_binance_key = UserKey.objects.get(user=user, is_active=True)
-        # Use decrypted credentials via properties
-        exchange = create_connection_with_ccxt(
+        exchange = make_futures_exchange(
             api_key=user_binance_key.api_key, api_secret=user_binance_key.api_secret
         )
         symbol = order.symbol
         quantity = order.order_quantity
         side = "sell" if order.direction == FutureOrder.TradeDirection.LONG else "buy"
+
+        # Cancel any protective orders
+        try:
+            if order.stop_loss_order_id:
+                try:
+                    exchange.cancel_order(id=order.stop_loss_order_id, symbol=symbol)
+                except Exception:
+                    pass
+            if order.tp_order_id:
+                try:
+                    exchange.cancel_order(id=order.tp_order_id, symbol=symbol)
+                except Exception:
+                    pass
+        except Exception:
+            pass
 
         close_order = exchange.create_order(
             symbol=symbol,
@@ -37,32 +39,40 @@ def quick_close_position(order: FutureOrder, user: User):
             amount=quantity,
             params={"reduceOnly": True},
         )
+        exit_avg = float(close_order.get("average") or 0)
 
-        cancel_sl_order = exchange.cancel_order(
-            id=order.stop_loss_order_id,
-            symbol=symbol,
+        # Classify closure as TP or SL based on direction and exit vs entry
+        is_tp = (
+            (order.direction == FutureOrder.TradeDirection.LONG and exit_avg >= float(order.entry_price)) or
+            (order.direction == FutureOrder.TradeDirection.SHORT and exit_avg <= float(order.entry_price))
         )
 
-        order.tp_order_id = close_order["id"]
-        order.tp_price = close_order["average"]
         order.status = FutureOrder.TradeStatus.CLOSED
-        order.tp_status = FutureOrder.TradeStatus.CLOSED
+        if is_tp:
+            order.tp_order_id = close_order["id"]
+            order.tp_price = exit_avg
+            order.tp_status = FutureOrder.TradeStatus.CLOSED
+            order.stop_loss_status = FutureOrder.TradeStatus.CANCELLED
+        else:
+            # Record under SL fields when loss
+            order.stop_loss_order_id = close_order["id"]
+            order.stop_loss_price = exit_avg
+            order.stop_loss_status = FutureOrder.TradeStatus.CLOSED
+            order.tp_status = FutureOrder.TradeStatus.CANCELLED
+
         # Fee info may be missing depending on exchange response
         fee = close_order.get("fee") or {}
         fee_cost = fee.get("cost", 0)
         order.tp_fee = fee_cost
         order.total_fee = float(order.total_fee) + float(fee_cost)
-        order.stop_loss_status = FutureOrder.TradeStatus.CANCELLED
 
         if order.direction == FutureOrder.TradeDirection.LONG:
             entry_price = float(order.entry_price)
-            exit_price = float(close_order["average"])
-            pnl = float(exit_price - entry_price) * float(quantity)
+            pnl = float(exit_avg - entry_price) * float(quantity)
             order.pnl = pnl
         else:
             entry_price = float(order.entry_price)
-            exit_price = float(close_order["average"])
-            pnl = float(exit_price - entry_price) * float(quantity)
+            pnl = float(entry_price - exit_avg) * float(quantity)
             order.pnl = pnl
         order.pnl_percentage = (float(order.pnl) / float(order.entry_price)) * 100
         order.save()

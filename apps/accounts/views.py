@@ -15,8 +15,12 @@ def home(request):
     user = request.user
 
     # Core aggregates
-    spot_closed = SpotOrder.objects.filter(user=user, status=SpotOrder.TradeStatus.CLOSED)
-    fut_closed = FutureOrder.objects.filter(user=user, status=FutureOrder.TradeStatus.CLOSED)
+    spot_closed = SpotOrder.objects.filter(
+        user=user, status=SpotOrder.TradeStatus.CLOSED
+    )
+    fut_closed = FutureOrder.objects.filter(
+        user=user, status=FutureOrder.TradeStatus.CLOSED
+    )
 
     spot_pnl = spot_closed.aggregate(total=Sum("pnl"))["total"] or 0
     fut_pnl = fut_closed.aggregate(total=Sum("pnl"))["total"] or 0
@@ -29,13 +33,28 @@ def home(request):
     fut_win_rate = round((fut_wins / fut_total) * 100, 2) if fut_total else 0
 
     # Volume approximations
-    spot_volume = SpotOrder.objects.filter(user=user).aggregate(total=Sum("total_cost"))["total"] or 0
-    fut_expr = ExpressionWrapper(F("order_quantity") * F("entry_price"), output_field=DecimalField(max_digits=20, decimal_places=10))
-    fut_volume = FutureOrder.objects.filter(user=user).annotate(val=fut_expr).aggregate(total=Sum("val"))["total"] or 0
+    spot_volume = (
+        SpotOrder.objects.filter(user=user).aggregate(total=Sum("total_cost"))["total"]
+        or 0
+    )
+    fut_expr = ExpressionWrapper(
+        F("order_quantity") * F("entry_price"),
+        output_field=DecimalField(max_digits=20, decimal_places=10),
+    )
+    fut_volume = (
+        FutureOrder.objects.filter(user=user)
+        .annotate(val=fut_expr)
+        .aggregate(total=Sum("val"))["total"]
+        or 0
+    )
 
     # Open positions count
-    spot_open = SpotOrder.objects.filter(user=user, status=SpotOrder.TradeStatus.POSITION).count()
-    fut_open = FutureOrder.objects.filter(user=user, status=FutureOrder.TradeStatus.POSITION).count()
+    spot_open = SpotOrder.objects.filter(
+        user=user, status=SpotOrder.TradeStatus.POSITION
+    ).count()
+    fut_open = FutureOrder.objects.filter(
+        user=user, status=FutureOrder.TradeStatus.POSITION
+    ).count()
 
     # PnL over last 30 days (by closed_at date)
     since = timezone.now() - timedelta(days=30)
@@ -53,10 +72,19 @@ def home(request):
     )
 
     # Normalize dates and combine series
-    date_set = sorted({*(d["closed_at__date"] for d in spot_daily), *(d["closed_at__date"] for d in fut_daily)})
+    date_set = sorted(
+        {
+            *(d["closed_at__date"] for d in spot_daily),
+            *(d["closed_at__date"] for d in fut_daily),
+        }
+    )
     labels = [d.strftime("%Y-%m-%d") for d in date_set]
-    spot_map = {d["closed_at__date"].strftime("%Y-%m-%d"): float(d["total"]) for d in spot_daily}
-    fut_map = {d["closed_at__date"].strftime("%Y-%m-%d"): float(d["total"]) for d in fut_daily}
+    spot_map = {
+        d["closed_at__date"].strftime("%Y-%m-%d"): float(d["total"]) for d in spot_daily
+    }
+    fut_map = {
+        d["closed_at__date"].strftime("%Y-%m-%d"): float(d["total"]) for d in fut_daily
+    }
     spot_series = [spot_map.get(day, 0) for day in labels]
     fut_series = [fut_map.get(day, 0) for day in labels]
 
@@ -114,9 +142,9 @@ def login_view(request):
             password = form.cleaned_data["password"]
             user = authenticate(request, username=username, password=password)
 
-            if user is not None and not user.is_superuser:
-                messages.error(request, "Your are not allowed to access this")
-                return render(request, "auth/login.html", {"form": form})
+            # if user is not None and not user.is_superuser:
+            #     messages.error(request, "Your are not allowed to access this")
+            #     return render(request, "accounts/login.html", {"form": form})
 
             if user is not None:
                 login(request, user)
@@ -141,8 +169,12 @@ def stats_view(request):
     since = timezone.now() - timedelta(days=days)
 
     # Select base querysets
-    spot_qs = SpotOrder.objects.filter(user=user, status=SpotOrder.TradeStatus.CLOSED, closed_at__gte=since)
-    fut_qs = FutureOrder.objects.filter(user=user, status=FutureOrder.TradeStatus.CLOSED, closed_at__gte=since)
+    spot_qs = SpotOrder.objects.filter(
+        user=user, status=SpotOrder.TradeStatus.CLOSED, closed_at__gte=since
+    )
+    fut_qs = FutureOrder.objects.filter(
+        user=user, status=FutureOrder.TradeStatus.CLOSED, closed_at__gte=since
+    )
     if symbol:
         spot_qs = spot_qs.filter(symbol=symbol)
         fut_qs = fut_qs.filter(symbol=symbol)
@@ -152,12 +184,29 @@ def stats_view(request):
         spot_qs = SpotOrder.objects.none()
 
     # Daily pnl
-    spot_daily = spot_qs.values("closed_at__date").annotate(total=Sum("pnl")).order_by("closed_at__date")
-    fut_daily = fut_qs.values("closed_at__date").annotate(total=Sum("pnl")).order_by("closed_at__date")
-    date_set = sorted({*(d["closed_at__date"] for d in spot_daily), *(d["closed_at__date"] for d in fut_daily)})
+    spot_daily = (
+        spot_qs.values("closed_at__date")
+        .annotate(total=Sum("pnl"))
+        .order_by("closed_at__date")
+    )
+    fut_daily = (
+        fut_qs.values("closed_at__date")
+        .annotate(total=Sum("pnl"))
+        .order_by("closed_at__date")
+    )
+    date_set = sorted(
+        {
+            *(d["closed_at__date"] for d in spot_daily),
+            *(d["closed_at__date"] for d in fut_daily),
+        }
+    )
     labels = [d.strftime("%Y-%m-%d") for d in date_set]
-    spot_map = {d["closed_at__date"].strftime("%Y-%m-%d"): float(d["total"]) for d in spot_daily}
-    fut_map = {d["closed_at__date"].strftime("%Y-%m-%d"): float(d["total"]) for d in fut_daily}
+    spot_map = {
+        d["closed_at__date"].strftime("%Y-%m-%d"): float(d["total"]) for d in spot_daily
+    }
+    fut_map = {
+        d["closed_at__date"].strftime("%Y-%m-%d"): float(d["total"]) for d in fut_daily
+    }
     spot_series = [spot_map.get(day, 0) for day in labels]
     fut_series = [fut_map.get(day, 0) for day in labels]
 
@@ -173,8 +222,16 @@ def stats_view(request):
         cum_fut.append(run)
 
     # Performance by symbol
-    spot_by_symbol = spot_qs.values("symbol").annotate(pnl=Sum("pnl"), trades=Count("id")).order_by("-pnl")[:10]
-    fut_by_symbol = fut_qs.values("symbol").annotate(pnl=Sum("pnl"), trades=Count("id")).order_by("-pnl")[:10]
+    spot_by_symbol = (
+        spot_qs.values("symbol")
+        .annotate(pnl=Sum("pnl"), trades=Count("id"))
+        .order_by("-pnl")[:10]
+    )
+    fut_by_symbol = (
+        fut_qs.values("symbol")
+        .annotate(pnl=Sum("pnl"), trades=Count("id"))
+        .order_by("-pnl")[:10]
+    )
 
     context = {
         "labels_json": json.dumps(labels),
@@ -235,33 +292,41 @@ def history_view(request):
     # Normalize to common dicts and sort
     records = []
     for o in spot_qs.select_related("user")[:2000]:
-        records.append({
-            "market": "Spot",
-            "symbol": o.symbol,
-            "direction": o.direction,
-            "status": o.status,
-            "pnl": float(o.pnl),
-            "pnl_pct": float(o.pnl_percentage),
-            "entry_price": float(o.entry_price),
-            "exit_price": float(o.exit_price),
-            "quantity": float(o.final_quantity or o.order_quantity),
-            "created_at": o.created_at,
-            "closed_at": o.closed_at,
-        })
+        records.append(
+            {
+                "id": o.id,
+                "market": "Spot",
+                "symbol": o.symbol,
+                "direction": o.direction,
+                "status": o.status,
+                "pnl": float(o.pnl),
+                "pnl_pct": float(o.pnl_percentage),
+                "entry_price": float(o.entry_price),
+                "quantity": float(o.final_quantity or o.order_quantity),
+                "created_at": o.created_at,
+                "closed_at": o.closed_at,
+            }
+        )
     for o in fut_qs.select_related("user")[:2000]:
-        records.append({
-            "market": "Futures",
-            "symbol": o.symbol,
-            "direction": o.direction,
-            "status": o.status,
-            "pnl": float(o.pnl),
-            "pnl_pct": float(o.pnl_percentage),
-            "entry_price": float(o.entry_price),
-            "exit_price": None,
-            "quantity": float(o.order_quantity),
-            "created_at": o.created_at,
-            "closed_at": o.closed_at,
-        })
+        records.append(
+            {
+                "id": o.id,
+                "market": "Futures",
+                "symbol": o.symbol,
+                "direction": o.direction,
+                "status": o.status,
+                "pnl": float(o.pnl),
+                "pnl_pct": float(o.pnl_percentage),
+                "entry_price": float(o.entry_price),
+                "tp_price": float(o.tp_price or 0),
+                "sl_price": float(o.stop_loss_price or 0),
+                "tp_status": o.tp_status,
+                "sl_status": o.stop_loss_status,
+                "quantity": float(o.order_quantity),
+                "created_at": o.created_at,
+                "closed_at": o.closed_at,
+            }
+        )
 
     records.sort(key=lambda r: r["created_at"], reverse=True)
 

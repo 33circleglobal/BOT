@@ -56,9 +56,11 @@
               <th>Status</th>
               <th>Qty</th>
               <th>Entry</th>
-              <th>Exit</th>
               <th>PnL</th>
               <th>PnL %</th>
+              <th>TP</th>
+              <th>SL</th>
+              <th>Actions</th>
             </tr>
           </thead>
           <tbody>
@@ -77,9 +79,93 @@
               </td>
               <td>{{ r.quantity|floatformat:4 }}</td>
               <td>{{ r.entry_price|default_if_none:"-"|floatformat:4 }}</td>
-              <td>{% if r.exit_price %}{{ r.exit_price|floatformat:4 }}{% else %}-{% endif %}</td>
               <td class="{% if r.pnl >= 0 %}text-success{% else %}text-danger{% endif %}">{{ r.pnl|floatformat:2 }}</td>
               <td class="{% if r.pnl_pct >= 0 %}text-success{% else %}text-danger{% endif %}">{{ r.pnl_pct|floatformat:2 }}%</td>
+              <td>
+                {% if r.market == 'Futures' %}
+                  {% if r.tp_price and r.tp_price > 0 %}
+                    {{ r.tp_price|floatformat:4 }}
+                  {% else %}
+                    -
+                  {% endif %}
+                  {% if r.tp_status %}
+                    {% if r.tp_status == 'POSITION' %}
+                      <span class="badge bg-info text-dark ms-1">Open</span>
+                    {% elif r.tp_status == 'CLOSED' %}
+                      <span class="badge bg-success ms-1">Closed</span>
+                    {% elif r.tp_status == 'CANCELLED' %}
+                      <span class="badge bg-secondary ms-1">Cancelled</span>
+                    {% elif r.tp_status == 'FAILED' %}
+                      <span class="badge bg-danger ms-1">Failed</span>
+                    {% endif %}
+                  {% endif %}
+                {% else %}
+                  {% if r.market == 'Spot' and r.status == 'POSITION' %}
+                    <!-- Refresh button for spot -->
+                    <form method="post" action="{% url 'trading:refresh_order' %}" style="display:inline" class="refresh-form">
+                      {% csrf_token %}
+                      <input type="hidden" name="order_id" value="{{ r.id }}" />
+                      <input type="hidden" name="market" value="{{ r.market }}" />
+                      <button type="submit" class="btn btn-sm btn-outline-success refresh-btn" title="Refresh status">
+                        <i class="bi bi-arrow-repeat refresh-icon"></i>
+                      </button>
+                    </form>
+                  {% else %}-{% endif %}
+                {% endif %}
+              </td>
+              <td>
+                {% if r.market == 'Futures' %}
+                  {% if r.sl_price and r.sl_price > 0 %}
+                    {{ r.sl_price|floatformat:4 }}
+                  {% else %}
+                    -
+                  {% endif %}
+                  {% if r.sl_status %}
+                    {% if r.sl_status == 'POSITION' %}
+                      <span class="badge bg-info text-dark ms-1">Open</span>
+                    {% elif r.sl_status == 'CLOSED' %}
+                      <span class="badge bg-success ms-1">Closed</span>
+                    {% elif r.sl_status == 'CANCELLED' %}
+                      <span class="badge bg-secondary ms-1">Cancelled</span>
+                    {% elif r.sl_status == 'FAILED' %}
+                      <span class="badge bg-danger ms-1">Failed</span>
+                    {% endif %}
+                  {% endif %}
+                {% else %}-{% endif %}
+              </td>
+              <td>
+                {% if r.market == 'Futures' and r.status == 'POSITION' %}
+                  <!-- TP button -->
+                  <button class="btn btn-sm btn-outline-secondary me-1" title="{% if r.tp_price and r.tp_price > 0 %}Edit TP{% else %}Add TP{% endif %}"
+                          data-bs-toggle="modal" data-bs-target="#tpModal"
+                          data-order-id="{{ r.id }}" data-symbol="{{ r.symbol }}" data-current="{{ r.tp_price|default_if_none:'' }}">
+                    {% if r.tp_price and r.tp_price > 0 %}<i class="bi bi-pencil-square"></i>{% else %}<i class="bi bi-plus-circle"></i>{% endif %}
+                  </button>
+                  <!-- SL button -->
+                  <button class="btn btn-sm btn-outline-danger me-1" title="{% if r.sl_price and r.sl_price > 0 %}Edit SL{% else %}Add SL{% endif %}"
+                          data-bs-toggle="modal" data-bs-target="#slModal"
+                          data-order-id="{{ r.id }}" data-symbol="{{ r.symbol }}" data-current="{{ r.sl_price|default_if_none:'' }}">
+                    {% if r.sl_price and r.sl_price > 0 %}<i class="bi bi-pencil-square"></i>{% else %}<i class="bi bi-plus-circle"></i>{% endif %}
+                  </button>
+                  <!-- Close button -->
+                  <form method="post" action="{% url 'trading:close_futures_order' %}" style="display:inline" onsubmit="return confirm('Close this position?')">
+                    {% csrf_token %}
+                    <input type="hidden" name="order_id" value="{{ r.id }}" />
+                    <button type="submit" class="btn btn-sm btn-outline-dark" title="Close position">
+                      <i class="bi bi-x-circle"></i>
+                    </button>
+                  </form>
+                  <!-- Refresh button -->
+                  <form method="post" action="{% url 'trading:refresh_order' %}" style="display:inline" class="refresh-form">
+                    {% csrf_token %}
+                    <input type="hidden" name="order_id" value="{{ r.id }}" />
+                    <input type="hidden" name="market" value="{{ r.market }}" />
+                    <button type="submit" class="btn btn-sm btn-outline-success ms-1 refresh-btn" title="Refresh status">
+                      <i class="bi bi-arrow-repeat refresh-icon"></i>
+                    </button>
+                  </form>
+                {% else %}-{% endif %}
+              </td>
             </tr>
             {% empty %}
             <tr><td colspan="10" class="text-center text-muted">No records</td></tr>
@@ -90,5 +176,99 @@
     </div>
   </div>
 </div>
-{% endblock %}
 
+<!-- TP Modal -->
+<div class="modal fade" id="tpModal" tabindex="-1" aria-hidden="true">
+  <div class="modal-dialog">
+    <div class="modal-content">
+      <form method="post" action="{% url 'trading:update_futures_tp_sl' %}">
+        {% csrf_token %}
+        <input type="hidden" name="mode" value="tp" />
+        <div class="modal-header">
+          <h5 class="modal-title">Set Take Profit <span id="tpModalSymbol" class="text-muted"></span></h5>
+          <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+        </div>
+        <div class="modal-body">
+          <input type="hidden" name="order_id" id="tpModalOrderId" />
+          <div class="mb-3">
+            <label class="form-label">Take Profit price</label>
+            <input name="tp" id="tpModalValue" class="form-control" placeholder="e.g. 70500" />
+            <div class="form-text">Leave empty to remove TP.</div>
+          </div>
+        </div>
+        <div class="modal-footer">
+          <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+          <button type="submit" class="btn btn-primary">Save</button>
+        </div>
+      </form>
+    </div>
+  </div>
+</div>
+
+<!-- SL Modal -->
+<div class="modal fade" id="slModal" tabindex="-1" aria-hidden="true">
+  <div class="modal-dialog">
+    <div class="modal-content">
+      <form method="post" action="{% url 'trading:update_futures_tp_sl' %}">
+        {% csrf_token %}
+        <input type="hidden" name="mode" value="sl" />
+        <div class="modal-header">
+          <h5 class="modal-title">Set Stop Loss <span id="slModalSymbol" class="text-muted"></span></h5>
+          <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+        </div>
+        <div class="modal-body">
+          <input type="hidden" name="order_id" id="slModalOrderId" />
+          <div class="mb-3">
+            <label class="form-label">Stop Loss price</label>
+            <input name="sl" id="slModalValue" class="form-control" placeholder="e.g. 65500" />
+            <div class="form-text">Leave empty to remove SL.</div>
+          </div>
+        </div>
+        <div class="modal-footer">
+          <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+          <button type="submit" class="btn btn-primary">Save</button>
+        </div>
+      </form>
+    </div>
+  </div>
+</div>
+
+<script>
+  const tpModal = document.getElementById('tpModal');
+  if (tpModal) {
+    tpModal.addEventListener('show.bs.modal', event => {
+      const btn = event.relatedTarget;
+      const orderId = btn.getAttribute('data-order-id');
+      const symbol = btn.getAttribute('data-symbol');
+      const current = btn.getAttribute('data-current');
+      document.getElementById('tpModalOrderId').value = orderId;
+      document.getElementById('tpModalSymbol').textContent = `(${symbol})`;
+      document.getElementById('tpModalValue').value = current && current !== '0' ? current : '';
+    });
+  }
+  const slModal = document.getElementById('slModal');
+  if (slModal) {
+    slModal.addEventListener('show.bs.modal', event => {
+      const btn = event.relatedTarget;
+      const orderId = btn.getAttribute('data-order-id');
+      const symbol = btn.getAttribute('data-symbol');
+      const current = btn.getAttribute('data-current');
+      document.getElementById('slModalOrderId').value = orderId;
+      document.getElementById('slModalSymbol').textContent = `(${symbol})`;
+      document.getElementById('slModalValue').value = current && current !== '0' ? current : '';
+    });
+  }
+  // Simple spinner on refresh submit
+  document.querySelectorAll('.refresh-form').forEach(f => {
+    f.addEventListener('submit', () => {
+      const btn = f.querySelector('.refresh-btn');
+      const icon = f.querySelector('.refresh-icon');
+      if (btn && icon) {
+        btn.disabled = true;
+        icon.classList.remove('bi-arrow-repeat');
+        icon.classList.add('spinner-border', 'spinner-border-sm');
+      }
+    });
+  });
+</script>
+{% endblock %}

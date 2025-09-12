@@ -1,5 +1,6 @@
 from apps.accounts.models import User, UserKey
 from apps.trade.models import SpotOrder
+from apps.trade.utils.common import make_spot_exchange, get_symbol_last_price
 
 import ccxt
 import logging
@@ -7,29 +8,6 @@ from django.utils import timezone
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
-
-
-def create_connection_with_ccxt(api_key, api_secret):
-    exchange = ccxt.binance(
-        {
-            "apiKey": api_key,
-            "secret": api_secret,
-        }
-    )
-    exchange.load_markets()
-    return exchange
-
-
-def get_symbol_current_market_price(symbol, exchange):
-    try:
-        ticker = exchange.fetch_ticker(symbol)
-        current_price = ticker["last"]
-        return current_price
-    except Exception as e:
-        logger.error(f"Error fetching ticker for {symbol}: {e}")
-        return False
-
-
 def quick_close_spot_position(order: SpotOrder, user: User):
     try:
         # Validate order type
@@ -38,7 +16,7 @@ def quick_close_spot_position(order: SpotOrder, user: User):
             return False
 
         user_binance_key = UserKey.objects.get(user=user, is_active=True)
-        exchange = create_connection_with_ccxt(
+        exchange = make_spot_exchange(
             api_key=user_binance_key.api_key, api_secret=user_binance_key.api_secret
         )
 
@@ -48,8 +26,19 @@ def quick_close_spot_position(order: SpotOrder, user: User):
         # Determine side (opposite of original order)
         side = "sell" if order.direction == SpotOrder.TradeDirection.LONG else "buy"
 
+        # Cancel protective stop by stored id if present
+        try:
+            if order.stop_loss_order_id:
+                try:
+                    exchange.cancel_order(id=order.stop_loss_order_id, symbol=symbol)
+                    order.stop_loss_status = SpotOrder.TradeStatus.CANCELLED
+                except Exception:
+                    pass
+        except Exception:
+            pass
+
         # Get current market price for validation
-        current_price = get_symbol_current_market_price(symbol, exchange)
+        current_price = get_symbol_last_price(exchange, symbol)
         if not current_price:
             logger.error(f"Could not fetch current price for {symbol}")
             return False
