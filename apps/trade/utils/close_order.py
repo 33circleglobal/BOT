@@ -24,11 +24,6 @@ def quick_close_position(order: FutureOrder, user: User):
                     exchange.cancel_order(id=order.stop_loss_order_id, symbol=symbol)
                 except Exception:
                     pass
-            if order.tp_order_id:
-                try:
-                    exchange.cancel_order(id=order.tp_order_id, symbol=symbol)
-                except Exception:
-                    pass
         except Exception:
             pass
 
@@ -41,30 +36,14 @@ def quick_close_position(order: FutureOrder, user: User):
         )
         exit_avg = float(close_order.get("average") or 0)
 
-        # Classify closure as TP or SL based on direction and exit vs entry
-        is_tp = (
-            (order.direction == FutureOrder.TradeDirection.LONG and exit_avg >= float(order.entry_price)) or
-            (order.direction == FutureOrder.TradeDirection.SHORT and exit_avg <= float(order.entry_price))
-        )
-
         order.status = FutureOrder.TradeStatus.CLOSED
-        if is_tp:
-            order.tp_order_id = close_order["id"]
-            order.tp_price = exit_avg
-            order.tp_status = FutureOrder.TradeStatus.CLOSED
-            order.stop_loss_status = FutureOrder.TradeStatus.CANCELLED
-        else:
-            # Record under SL fields when loss
-            order.stop_loss_order_id = close_order["id"]
-            order.stop_loss_price = exit_avg
-            order.stop_loss_status = FutureOrder.TradeStatus.CLOSED
-            order.tp_status = FutureOrder.TradeStatus.CANCELLED
+        # Mark SL as cancelled if we closed manually via market
+        order.stop_loss_status = FutureOrder.TradeStatus.CANCELLED
 
         # Fee info may be missing depending on exchange response
         fee = close_order.get("fee") or {}
         fee_cost = fee.get("cost", 0)
-        order.tp_fee = fee_cost
-        order.total_fee = float(order.total_fee) + float(fee_cost)
+        order.total_fee = float(order.total_fee or 0) + float(fee_cost)
 
         if order.direction == FutureOrder.TradeDirection.LONG:
             entry_price = float(order.entry_price)

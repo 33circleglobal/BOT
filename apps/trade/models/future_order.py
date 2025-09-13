@@ -33,13 +33,6 @@ class FutureOrder(models.Model):
     stop_loss_status = models.CharField(
         max_length=20, choices=TradeStatus.choices, default=TradeStatus.POSITION
     )
-    # take profit
-    tp_order_id = models.CharField(max_length=100)
-    tp_price = models.DecimalField(max_digits=20, decimal_places=10, default=0)
-    tp_fee = models.DecimalField(max_digits=20, decimal_places=10, default=0)
-    tp_status = models.CharField(
-        max_length=20, choices=TradeStatus.choices, default=TradeStatus.POSITION
-    )
     # total fee
     total_fee = models.DecimalField(
         max_digits=10, decimal_places=6, null=True, blank=True

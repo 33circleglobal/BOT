@@ -15,12 +15,12 @@ logger = logging.getLogger(__name__)
 
 
 @celery_app.task(bind=True)
-def create_order_of_user_controller(self, side, symbol, market, sl=None, tp=None):
+def create_order_of_user_controller(self, side, symbol, market, sl=None, tp=None, tps=None):
     try:
         users_key = UserKey.objects.filter(is_active=True)
 
         for user_key in users_key:
-            create_order_of_user.delay(side, symbol, market, user_key.user.id, sl, tp)
+            create_order_of_user.delay(side, symbol, market, user_key.user.id, sl, tp, tps)
     except Exception as e:
         print(f"Error dispatching  order create: {str(e)}")
 
@@ -28,11 +28,11 @@ def create_order_of_user_controller(self, side, symbol, market, sl=None, tp=None
 @celery_app.task(
     bind=True, autoretry_for=(Exception,), retry_backoff=True, max_retries=3
 )
-def create_order_of_user(self, side, symbol, market, user_id, sl=None, tp=None):
+def create_order_of_user(self, side, symbol, market, user_id, sl=None, tp=None, tps=None):
     try:
         user = User.objects.get(id=user_id)
         if market == "futures":
-            create_binance_future_order(side, symbol, user, sl=sl, tp=tp)
+            create_binance_future_order(side, symbol, user, sl=sl, tp=tp, tps=tps)
         else:
             create_binance_spot_order(side, symbol, user, sl=sl)
     except Exception as e:
@@ -92,17 +92,17 @@ def quick_close_user_order(self, order_id, market):
 
 # Futures signal orchestration respecting existing positions
 @celery_app.task(bind=True)
-def handle_futures_signal_controller(self, side, symbol, sl=None, tp=None):
+def handle_futures_signal_controller(self, side, symbol, sl=None, tp=None, tps=None):
     try:
         users_key = UserKey.objects.filter(is_active=True)
         for user_key in users_key:
-            handle_futures_signal.delay(side, symbol, user_key.user.id, sl, tp)
+            handle_futures_signal.delay(side, symbol, user_key.user.id, sl, tp, tps)
     except Exception as e:
         logger.error(f"Error dispatching futures signal: {e}")
 
 
 @celery_app.task(bind=True, autoretry_for=(Exception,), retry_backoff=True, max_retries=3)
-def handle_futures_signal(self, side, symbol, user_id, sl=None, tp=None):
+def handle_futures_signal(self, side, symbol, user_id, sl=None, tp=None, tps=None):
     try:
         user = User.objects.get(id=user_id)
         side = side.lower()
@@ -115,7 +115,7 @@ def handle_futures_signal(self, side, symbol, user_id, sl=None, tp=None):
 
         if not open_orders.exists():
             # No open trade: open new
-            create_binance_future_order(side, symbol, user, sl=sl, tp=tp)
+            create_binance_future_order(side, symbol, user, sl=sl, tp=tp, tps=tps)
             return
 
         existing = open_orders.first()
@@ -127,7 +127,7 @@ def handle_futures_signal(self, side, symbol, user_id, sl=None, tp=None):
 
         # Opposite signal: close then open new
         quick_close_position(order=existing, user=user)
-        create_binance_future_order(side, symbol, user, sl=sl, tp=tp)
+        create_binance_future_order(side, symbol, user, sl=sl, tp=tp, tps=tps)
     except Exception as e:
         print("Caught exception:", e)
         raise self.retry(exc=e)

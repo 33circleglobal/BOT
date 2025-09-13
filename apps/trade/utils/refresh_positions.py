@@ -1,9 +1,10 @@
 from apps.accounts.models import UserKey
-from apps.trade.models import FutureOrder, SpotOrder
+from apps.trade.models import FutureOrder, SpotOrder, FutureTakeProfit
 from apps.trade.utils.common import make_futures_exchange, make_spot_exchange
 
 import logging
 from django.utils import timezone
+from decimal import Decimal
 
 logger = logging.getLogger(__name__)
 
@@ -28,7 +29,6 @@ def refresh_futures_order(order: FutureOrder) -> bool:
                     order.status = FutureOrder.TradeStatus.CLOSED
                     order.stop_loss_price = exit_avg
                     order.stop_loss_status = FutureOrder.TradeStatus.CLOSED
-                    order.tp_status = FutureOrder.TradeStatus.CANCELLED
                     fee = sl_info.get("fee") or {}
                     fee_cost = float(fee.get("cost", 0))
                     order.stop_loss_fee = fee_cost
@@ -47,34 +47,73 @@ def refresh_futures_order(order: FutureOrder) -> bool:
             except Exception:
                 pass
 
-        # Check TP
-        if order.tp_order_id:
-            try:
-                tp_info = ex.fetch_order(id=order.tp_order_id, symbol=symbol)
-                if tp_info.get("remaining") == 0 and tp_info.get("status") == "closed":
-                    exit_avg = float(tp_info.get("average") or tp_info.get("price") or 0)
-                    order.status = FutureOrder.TradeStatus.CLOSED
-                    order.tp_price = exit_avg
-                    order.tp_status = FutureOrder.TradeStatus.CLOSED
-                    order.stop_loss_status = FutureOrder.TradeStatus.CANCELLED
-                    fee = tp_info.get("fee") or {}
-                    fee_cost = float(fee.get("cost", 0))
-                    order.tp_fee = fee_cost
-                    order.total_fee = float(order.total_fee or 0) + fee_cost
-                    if order.direction == FutureOrder.TradeDirection.LONG:
-                        entry = float(order.entry_price)
-                        order.pnl = (exit_avg - entry) * qty
-                    else:
-                        entry = float(order.entry_price)
-                        order.pnl = (entry - exit_avg) * qty
-                    order.pnl_percentage = (float(order.pnl) / float(order.entry_price)) * 100
-                    order.closed_at = timezone.now()
-                    order.save()
-                    updated = True
-                    return updated
-            except Exception:
-                pass
+        # Legacy parent TP removed
 
+        # Check multiple TPs (children). Do not close parent unless all filled.
+        children = list(FutureTakeProfit.objects.filter(order=order))
+        if children:
+            any_updated = False
+            for child in children:
+                if child.status == FutureTakeProfit.TradeStatus.CLOSED:
+                    continue
+                try:
+                    info = ex.fetch_order(id=child.tp_order_id, symbol=symbol)
+                    if info.get("remaining") == 0 and info.get("status") == "closed":
+                        exit_avg = float(info.get("average") or info.get("price") or 0)
+                        fee = info.get("fee") or {}
+                        child.status = FutureTakeProfit.TradeStatus.CLOSED
+                        child.fee = float(fee.get("cost", 0))
+                        child.save()
+                        # Optionally accumulate fees/pnl on parent
+                        order.total_fee = float(order.total_fee or 0) + float(child.fee)
+                        # Realized PnL accumulation for this filled TP leg
+                        entry = float(order.entry_price)
+                        qty_leg = float(child.quantity)
+                        pnl_leg = (
+                            (exit_avg - entry) * qty_leg
+                            if order.direction == FutureOrder.TradeDirection.LONG
+                            else (entry - exit_avg) * qty_leg
+                        )
+                        order.pnl = float(order.pnl or 0) + pnl_leg
+                        notional = entry * float(order.order_quantity or 0)
+                        if notional:
+                            order.pnl_percentage = (float(order.pnl) / notional) * 100
+                        any_updated = True
+                except Exception:
+                    pass
+
+            if any_updated:
+                # If all TP children closed and no SL closed and not parent TP, we can consider parent closed if sum qty equals order qty.
+                closed_qty = sum(float(c.quantity) for c in children if c.status == FutureTakeProfit.TradeStatus.CLOSED)
+                total_qty = float(order.order_quantity)
+                if closed_qty >= total_qty and order.status == FutureOrder.TradeStatus.POSITION:
+                    order.status = FutureOrder.TradeStatus.CLOSED
+                    order.stop_loss_status = FutureOrder.TradeStatus.CANCELLED
+                    order.closed_at = timezone.now()
+                order.save()
+                return True
+
+        # Fallback: ensure realized PnL reflects any already-closed TP legs
+        try:
+            closed_children = list(FutureTakeProfit.objects.filter(order=order, status=FutureTakeProfit.TradeStatus.CLOSED))
+            if closed_children:
+                entry = Decimal(str(order.entry_price))
+                total_qty = Decimal(str(order.order_quantity)) if order.order_quantity else Decimal("0")
+                realized = Decimal("0")
+                for child in closed_children:
+                    exit_avg = Decimal(str(child.price))
+                    qty_leg = Decimal(str(child.quantity))
+                    if order.direction == FutureOrder.TradeDirection.LONG:
+                        realized += (exit_avg - entry) * qty_leg
+                    else:
+                        realized += (entry - exit_avg) * qty_leg
+                order.pnl = realized
+                if total_qty and entry:
+                    notional = entry * total_qty
+                    order.pnl_percentage = (realized / notional) * Decimal("100")
+                order.save(update_fields=["pnl", "pnl_percentage"])
+        except Exception:
+            pass
         return updated
     except Exception as e:
         logger.error(f"Failed to refresh futures order {order.id}: {e}")
