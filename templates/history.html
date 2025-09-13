@@ -142,6 +142,15 @@
                       <i class="bi bi-arrow-repeat refresh-icon"></i>
                     </button>
                   </form>
+                  <!-- Toggle ignore opposite signals -->
+                  <form method="post" action="{% url 'trading:toggle_ignore_signal' %}" style="display:inline">
+                    {% csrf_token %}
+                    <input type="hidden" name="order_id" value="{{ r.id }}" />
+                    <input type="hidden" name="market" value="{{ r.market }}" />
+                    <button type="submit" class="btn btn-sm {% if r.ignore %}btn-warning{% else %}btn-outline-secondary{% endif %} ms-1" title="{% if r.ignore %}Ignore opposite signals: ON{% else %}Ignore opposite signals: OFF{% endif %}">
+                      {% if r.ignore %}<i class="bi bi-slash-circle-fill"></i>{% else %}<i class="bi bi-slash-circle"></i>{% endif %}
+                    </button>
+                  </form>
                 {% elif r.market == 'Spot' and r.status == 'POSITION' %}
                   <!-- Close button for Spot -->
                   <form method="post" action="{% url 'trading:close_spot_order' %}" style="display:inline" onsubmit="return confirm('Close this position?')">
@@ -158,6 +167,15 @@
                     <input type="hidden" name="market" value="{{ r.market }}" />
                     <button type="submit" class="btn btn-sm btn-outline-success ms-1 refresh-btn" title="Refresh status">
                       <i class="bi bi-arrow-repeat refresh-icon"></i>
+                    </button>
+                  </form>
+                  <!-- Toggle ignore opposite signals for Spot -->
+                  <form method="post" action="{% url 'trading:toggle_ignore_signal' %}" style="display:inline">
+                    {% csrf_token %}
+                    <input type="hidden" name="order_id" value="{{ r.id }}" />
+                    <input type="hidden" name="market" value="{{ r.market }}" />
+                    <button type="submit" class="btn btn-sm {% if r.ignore %}btn-warning{% else %}btn-outline-secondary{% endif %} ms-1" title="{% if r.ignore %}Ignore opposite signals: ON{% else %}Ignore opposite signals: OFF{% endif %}">
+                      {% if r.ignore %}<i class="bi bi-slash-circle-fill"></i>{% else %}<i class="bi bi-slash-circle"></i>{% endif %}
                     </button>
                   </form>
                 {% else %}-{% endif %}
