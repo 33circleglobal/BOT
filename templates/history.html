@@ -83,34 +83,11 @@
               <td class="{% if r.pnl_pct >= 0 %}text-success{% else %}text-danger{% endif %}">{{ r.pnl_pct|floatformat:2 }}%</td>
               <td>
                 {% if r.market == 'Futures' %}
-                  {% if r.tp_price and r.tp_price > 0 %}
-                    {{ r.tp_price|floatformat:4 }}
-                  {% else %}
-                    -
-                  {% endif %}
-                  {% if r.tp_status %}
-                    {% if r.tp_status == 'POSITION' %}
-                      <span class="badge bg-info text-dark ms-1">Open</span>
-                    {% elif r.tp_status == 'CLOSED' %}
-                      <span class="badge bg-success ms-1">Closed</span>
-                    {% elif r.tp_status == 'CANCELLED' %}
-                      <span class="badge bg-secondary ms-1">Cancelled</span>
-                    {% elif r.tp_status == 'FAILED' %}
-                      <span class="badge bg-danger ms-1">Failed</span>
-                    {% endif %}
-                  {% endif %}
-                {% else %}
-                  {% if r.market == 'Spot' and r.status == 'POSITION' %}
-                    <!-- Refresh button for spot -->
-                    <form method="post" action="{% url 'trading:refresh_order' %}" style="display:inline" class="refresh-form">
-                      {% csrf_token %}
-                      <input type="hidden" name="order_id" value="{{ r.id }}" />
-                      <input type="hidden" name="market" value="{{ r.market }}" />
-                      <button type="submit" class="btn btn-sm btn-outline-success refresh-btn" title="Refresh status">
-                        <i class="bi bi-arrow-repeat refresh-icon"></i>
-                      </button>
-                    </form>
+                  {% if r.tp_count and r.tp_count > 0 %}
+                    <span class="text-nowrap">{{ r.tp_closed }}/{{ r.tp_count }} TPs</span>
                   {% else %}-{% endif %}
+                {% else %}
+                  -
                 {% endif %}
               </td>
               <td>
@@ -135,11 +112,12 @@
               </td>
               <td>
                 {% if r.market == 'Futures' and r.status == 'POSITION' %}
-                  <!-- TP button -->
-                  <button class="btn btn-sm btn-outline-secondary me-1" title="{% if r.tp_price and r.tp_price > 0 %}Edit TP{% else %}Add TP{% endif %}"
-                          data-bs-toggle="modal" data-bs-target="#tpModal"
-                          data-order-id="{{ r.id }}" data-symbol="{{ r.symbol }}" data-current="{{ r.tp_price|default_if_none:'' }}">
-                    {% if r.tp_price and r.tp_price > 0 %}<i class="bi bi-pencil-square"></i>{% else %}<i class="bi bi-plus-circle"></i>{% endif %}
+                  <!-- Manage TPs button -->
+                  <button class="btn btn-sm btn-outline-secondary me-1" title="Manage TPs"
+                          data-bs-toggle="modal" data-bs-target="#tpsModal"
+                          data-order-id="{{ r.id }}" data-symbol="{{ r.symbol }}"
+                          data-tps="{{ r.tps_json|urlencode }}">
+                    <i class="bi bi-list-check"></i>
                   </button>
                   <!-- SL button -->
                   <button class="btn btn-sm btn-outline-danger me-1" title="{% if r.sl_price and r.sl_price > 0 %}Edit SL{% else %}Add SL{% endif %}"
@@ -164,6 +142,24 @@
                       <i class="bi bi-arrow-repeat refresh-icon"></i>
                     </button>
                   </form>
+                {% elif r.market == 'Spot' and r.status == 'POSITION' %}
+                  <!-- Close button for Spot -->
+                  <form method="post" action="{% url 'trading:close_spot_order' %}" style="display:inline" onsubmit="return confirm('Close this position?')">
+                    {% csrf_token %}
+                    <input type="hidden" name="order_id" value="{{ r.id }}" />
+                    <button type="submit" class="btn btn-sm btn-outline-dark" title="Close position">
+                      <i class="bi bi-x-circle"></i>
+                    </button>
+                  </form>
+                  <!-- Refresh button for Spot -->
+                  <form method="post" action="{% url 'trading:refresh_order' %}" style="display:inline" class="refresh-form">
+                    {% csrf_token %}
+                    <input type="hidden" name="order_id" value="{{ r.id }}" />
+                    <input type="hidden" name="market" value="{{ r.market }}" />
+                    <button type="submit" class="btn btn-sm btn-outline-success ms-1 refresh-btn" title="Refresh status">
+                      <i class="bi bi-arrow-repeat refresh-icon"></i>
+                    </button>
+                  </form>
                 {% else %}-{% endif %}
               </td>
             </tr>
@@ -178,6 +174,47 @@
 </div>
 
 <!-- TP Modal -->
+<div class="modal fade" id="tpsModal" tabindex="-1" aria-hidden="true">
+  <div class="modal-dialog modal-lg">
+    <div class="modal-content">
+      <form method="post" action="{% url 'trading:update_futures_multi_tp' %}">
+        {% csrf_token %}
+        <div class="modal-header">
+          <h5 class="modal-title">Manage Take Profits <span id="tpsModalSymbol" class="text-muted"></span></h5>
+          <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+        </div>
+        <div class="modal-body">
+          <input type="hidden" name="order_id" id="tpsModalOrderId" />
+          <div id="tpRows">
+            <div class="row g-2 align-items-end tp-row">
+              <div class="col-6">
+                <label class="form-label">TP Price</label>
+                <input name="tp_prices[]" class="form-control" placeholder="e.g. 70500" />
+              </div>
+              <div class="col-4">
+                <label class="form-label">% of Position</label>
+                <input name="tp_percents[]" class="form-control" placeholder="e.g. 10" />
+              </div>
+              <div class="col-2">
+                <button type="button" class="btn btn-outline-danger remove-row w-100">Remove</button>
+              </div>
+            </div>
+          </div>
+          <div class="mt-2">
+            <button type="button" class="btn btn-outline-secondary" id="addTpRow">Add TP</button>
+            <span class="ms-2 text-muted small" id="tpTotalPct">Total: 0%</span>
+          </div>
+          <div class="text-muted small mt-2">Ensure total percent does not exceed 100%. Values validated server-side.</div>
+        </div>
+        <div class="modal-footer">
+          <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+          <button type="submit" class="btn btn-primary">Save</button>
+        </div>
+      </form>
+    </div>
+  </div>
+</div>
+
 <div class="modal fade" id="tpModal" tabindex="-1" aria-hidden="true">
   <div class="modal-dialog">
     <div class="modal-content">
@@ -256,6 +293,90 @@
       document.getElementById('slModalOrderId').value = orderId;
       document.getElementById('slModalSymbol').textContent = `(${symbol})`;
       document.getElementById('slModalValue').value = current && current !== '0' ? current : '';
+    });
+  }
+  const tpsModal = document.getElementById('tpsModal');
+  function recalcTotalPct() {
+    let total = 0;
+    document.querySelectorAll('#tpRows input[name="tp_percents[]"]').forEach(inp => {
+      const v = parseFloat(inp.value);
+      if (!isNaN(v)) total += v;
+    });
+    document.getElementById('tpTotalPct').textContent = `Total: ${total}%`;
+  }
+  if (tpsModal) {
+    // Capture template once
+    const rowsCont = document.getElementById('tpRows');
+    const rowTemplateHTML = rowsCont.querySelector('.tp-row').outerHTML;
+    tpsModal.addEventListener('show.bs.modal', event => {
+      const btn = event.relatedTarget;
+      const orderId = btn.getAttribute('data-order-id');
+      const symbol = btn.getAttribute('data-symbol');
+      const tpsDataRaw = btn.getAttribute('data-tps');
+      const tpsData = tpsDataRaw ? decodeURIComponent(tpsDataRaw) : null;
+      document.getElementById('tpsModalOrderId').value = orderId;
+      document.getElementById('tpsModalSymbol').textContent = `(${symbol})`;
+      // reset rows
+      const rows = document.getElementById('tpRows');
+      rows.innerHTML = rowTemplateHTML; // one empty row
+      // Prefill if existing TPs
+      try {
+        const arr = tpsData ? JSON.parse(tpsData) : [];
+        if (arr.length > 0) {
+          // first row
+          let first = rows.querySelector('.tp-row');
+          first.querySelector('input[name="tp_prices[]"]').value = arr[0].price ?? '';
+          first.querySelector('input[name="tp_percents[]"]').value = arr[0].percent ?? '';
+          if (arr[0].status && arr[0].status === 'CLOSED') {
+            first.querySelectorAll('input').forEach(i => i.setAttribute('disabled', 'disabled'));
+            const lastCol = first.querySelector('.col-2');
+            if (lastCol) {
+              lastCol.innerHTML = '<span class="badge bg-success w-100">Closed</span>';
+            }
+          }
+          // remaining
+          for (let i = 1; i < arr.length; i++) {
+            const wrapper = document.createElement('div');
+            wrapper.innerHTML = rowTemplateHTML;
+            const node = wrapper.firstElementChild;
+            const inputs = node.querySelectorAll('input');
+            if (inputs.length >= 2) {
+              inputs[0].value = arr[i].price ?? '';
+              inputs[1].value = arr[i].percent ?? '';
+            }
+            if (arr[i].status && arr[i].status === 'CLOSED') {
+              inputs.forEach(i => i.setAttribute('disabled', 'disabled'));
+              const lastCol = node.querySelector('.col-2');
+              if (lastCol) {
+                lastCol.innerHTML = '<span class="badge bg-success w-100">Closed</span>';
+              }
+            }
+            rows.appendChild(node);
+          }
+        }
+      } catch (e) {
+        // ignore parse errors
+      }
+      recalcTotalPct();
+    });
+    document.getElementById('addTpRow').addEventListener('click', () => {
+      const rows = document.getElementById('tpRows');
+      const wrapper = document.createElement('div');
+      wrapper.innerHTML = rowTemplateHTML;
+      const node = wrapper.firstElementChild;
+      node.querySelectorAll('input').forEach(i => i.value = '');
+      rows.appendChild(node);
+    });
+    document.getElementById('tpRows').addEventListener('click', (e) => {
+      if (e.target && e.target.classList.contains('remove-row')) {
+        const row = e.target.closest('.tp-row');
+        const rows = document.querySelectorAll('#tpRows .tp-row');
+        if (rows.length > 1) row.remove();
+        recalcTotalPct();
+      }
+    });
+    document.getElementById('tpRows').addEventListener('input', (e) => {
+      if (e.target && e.target.name === 'tp_percents[]') recalcTotalPct();
     });
   }
   // Simple spinner on refresh submit

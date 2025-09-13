@@ -308,6 +308,14 @@ def history_view(request):
             }
         )
     for o in fut_qs.select_related("user")[:2000]:
+        # collect child TPs for prefill in UI
+        child_tps = list(
+            o.tps.values("price", "percent", "status").order_by("id")
+        )
+        tps_list = [
+            {"price": float(tp["price"]), "percent": float(tp["percent"]), "status": tp["status"]}
+            for tp in child_tps
+        ]
         records.append(
             {
                 "id": o.id,
@@ -318,10 +326,11 @@ def history_view(request):
                 "pnl": float(o.pnl),
                 "pnl_pct": float(o.pnl_percentage),
                 "entry_price": float(o.entry_price),
-                "tp_price": float(o.tp_price or 0),
                 "sl_price": float(o.stop_loss_price or 0),
-                "tp_status": o.tp_status,
                 "sl_status": o.stop_loss_status,
+                "tp_count": o.tps.count(),
+                "tp_closed": o.tps.filter(status="CLOSED").count(),
+                "tps_json": json.dumps(tps_list),
                 "quantity": float(o.order_quantity),
                 "created_at": o.created_at,
                 "closed_at": o.closed_at,
