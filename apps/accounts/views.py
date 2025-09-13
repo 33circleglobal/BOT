@@ -303,6 +303,7 @@ def history_view(request):
                 "pnl_pct": float(o.pnl_percentage),
                 "entry_price": float(o.entry_price),
                 "quantity": float(o.final_quantity or o.order_quantity),
+                "ignore": bool(getattr(o, "ignore_opposite_signal", False)),
                 "created_at": o.created_at,
                 "closed_at": o.closed_at,
             }
@@ -332,6 +333,7 @@ def history_view(request):
                 "tp_closed": o.tps.filter(status="CLOSED").count(),
                 "tps_json": json.dumps(tps_list),
                 "quantity": float(o.order_quantity),
+                "ignore": bool(getattr(o, "ignore_opposite_signal", False)),
                 "created_at": o.created_at,
                 "closed_at": o.closed_at,
             }

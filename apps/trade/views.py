@@ -399,3 +399,28 @@ def refresh_order(request):
     except Exception as e:
         messages.error(request, f"Refresh failed: {e}")
     return redirect("accounts:history")
+
+
+@login_required
+def toggle_ignore_signal(request):
+    if request.method != "POST":
+        return HttpResponseBadRequest("Invalid method")
+    order_id = request.POST.get("order_id")
+    market = request.POST.get("market")  # 'Futures' or 'Spot'
+    if not order_id or not market:
+        return HttpResponseBadRequest("Missing parameters")
+    try:
+        if market == "Futures":
+            order = FutureOrder.objects.get(id=order_id, user=request.user)
+        else:
+            order = SpotOrder.objects.get(id=order_id, user=request.user)
+        current = getattr(order, "ignore_opposite_signal", False)
+        setattr(order, "ignore_opposite_signal", not current)
+        order.save(update_fields=["ignore_opposite_signal", "updated_at"]) if hasattr(order, "updated_at") else order.save()
+        state = "enabled" if not current else "disabled"
+        messages.success(request, f"Ignore opposite signals {state} for this order")
+    except (FutureOrder.DoesNotExist, SpotOrder.DoesNotExist):
+        messages.error(request, "Order not found")
+    except Exception as e:
+        messages.error(request, f"Toggle failed: {e}")
+    return redirect("accounts:history")

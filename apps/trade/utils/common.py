@@ -40,4 +40,3 @@ def compute_default_sl(entry_price: float, side: str, pct: float = 0.01) -> floa
 
 def opposite_side(side: str) -> str:
     return "sell" if side.lower() == "buy" else "buy"
-

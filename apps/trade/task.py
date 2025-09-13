@@ -53,6 +53,7 @@ def close_order_of_user_controller(self, side, symbol, market):
             symbol=symbol,
             status=FutureOrder.TradeStatus.POSITION,
             direction=position_direction,
+            ignore_opposite_signal=False,
         )
         print(orders)
         for order in orders:
@@ -68,6 +69,7 @@ def close_order_of_user_controller(self, side, symbol, market):
             symbol=symbol,
             status=SpotOrder.TradeStatus.POSITION,
             direction=position_direction,
+            ignore_opposite_signal=False,
         )
         print(orders)
         for order in orders:
@@ -123,6 +125,10 @@ def handle_futures_signal(self, side, symbol, user_id, sl=None, tp=None, tps=Non
             side == "sell" and existing.direction == FutureOrder.TradeDirection.SHORT
         ):
             # Same signal: ignore
+            return
+
+        # If user marked to ignore opposite signals on any open position, do nothing
+        if open_orders.filter(ignore_opposite_signal=True).exists():
             return
 
         # Opposite signal: close then open new

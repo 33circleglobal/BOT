@@ -61,6 +61,9 @@ class SpotOrder(models.Model):
         max_length=20, choices=TradeStatus.choices, default=TradeStatus.POSITION
     )
 
+    # If true, ignore opposite webhook signals; user will close manually
+    ignore_opposite_signal = models.BooleanField(default=False)
+
     # User and timestamps
     user = models.ForeignKey(User, on_delete=models.SET_NULL, null=True)
     created_at = models.DateTimeField(auto_now_add=True)
