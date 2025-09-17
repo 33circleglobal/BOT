@@ -57,7 +57,7 @@ def create_binance_future_order(
     position_pct: float = 90.0,
 ):
     try:
-        margin_mode = "isolated"
+        margin_mode = "crossed"
         side = side.lower()
         position = position_pct
 
