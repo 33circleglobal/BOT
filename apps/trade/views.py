@@ -14,7 +14,11 @@ from apps.trade.task import (
 
 from apps.trade.models import FutureOrder, FutureTakeProfit
 from apps.accounts.models import UserKey
-from apps.trade.utils.common import make_futures_exchange, get_symbol_last_price
+from apps.trade.utils.common import (
+    make_futures_exchange,
+    make_spot_exchange,
+    get_symbol_last_price,
+)
 from apps.trade.utils.close_order import quick_close_position
 from apps.trade.utils.close_market_order_spot import quick_close_spot_position
 from apps.trade.utils.refresh_positions import refresh_futures_order, refresh_spot_order
@@ -197,6 +201,89 @@ def update_futures_tp_sl(request):
         messages.success(request, "TP/SL updated")
     except Exception as e:
         messages.error(request, f"Failed to update TP/SL: {e}")
+
+    return redirect("accounts:history")
+
+
+@login_required
+def update_spot_sl(request):
+    if request.method != "POST":
+        return HttpResponseBadRequest("Invalid method")
+
+    order_id = request.POST.get("order_id")
+    sl = request.POST.get("sl")
+
+    if not order_id:
+        return HttpResponseBadRequest("Missing order_id")
+
+    try:
+        order = SpotOrder.objects.get(
+            id=order_id, user=request.user, status=SpotOrder.TradeStatus.POSITION
+        )
+    except SpotOrder.DoesNotExist:
+        messages.error(request, "Order not found or not open")
+        return redirect("accounts:history")
+
+    try:
+        user_key = UserKey.objects.get(user=request.user, is_active=True)
+        ex = make_spot_exchange(api_key=user_key.api_key, api_secret=user_key.api_secret)
+        symbol = order.symbol
+
+        inv_side = (
+            "sell" if order.direction == SpotOrder.TradeDirection.LONG else "buy"
+        )
+        amount = float(order.final_quantity or order.order_quantity)
+
+        if sl:
+            current = float(get_symbol_last_price(ex, symbol) or 0)
+            sl_val = float(sl)
+            if (
+                order.direction == SpotOrder.TradeDirection.LONG and sl_val >= current
+            ):
+                messages.error(request, "SL must be below current price for long.")
+                return redirect("accounts:history")
+            if (
+                order.direction == SpotOrder.TradeDirection.SHORT and sl_val <= current
+            ):
+                messages.error(request, "SL must be above current price for short.")
+                return redirect("accounts:history")
+
+            # Cancel existing SL if present
+            if order.stop_loss_order_id:
+                try:
+                    ex.cancel_order(id=order.stop_loss_order_id, symbol=symbol)
+                except Exception:
+                    pass
+
+            stop_p = float(ex.priceToPrecision(symbol, sl_val))
+            amt_p = float(ex.amountToPrecision(symbol, amount))
+            # Binance spot commonly expects STOP_LOSS_LIMIT for stop protection
+            sl_o = ex.create_order(
+                symbol=symbol,
+                side=inv_side,
+                type="STOP_LOSS_LIMIT",
+                amount=amt_p,
+                price=stop_p,
+                params={"stopPrice": stop_p},
+            )
+            order.stop_loss_order_id = sl_o.get("id", "")
+            order.stop_loss_price = stop_p
+            order.stop_loss_status = SpotOrder.TradeStatus.POSITION
+        else:
+            # Remove SL
+            if order.stop_loss_order_id:
+                try:
+                    ex.cancel_order(id=order.stop_loss_order_id, symbol=symbol)
+                except Exception:
+                    pass
+            order.stop_loss_order_id = ""
+            order.stop_loss_price = 0
+            order.stop_loss_status = SpotOrder.TradeStatus.CANCELLED
+
+        order.save()
+        messages.success(request, "Spot SL updated")
+    except Exception as e:
+        messages.error(request, f"Failed to update Spot SL: {e}")
 
     return redirect("accounts:history")
 
