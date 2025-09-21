@@ -91,24 +91,22 @@
                 {% endif %}
               </td>
               <td>
-                {% if r.market == 'Futures' %}
-                  {% if r.sl_price and r.sl_price > 0 %}
-                    {{ r.sl_price|floatformat:4 }}
-                  {% else %}
-                    -
+                {% if r.sl_price and r.sl_price > 0 %}
+                  {{ r.sl_price|floatformat:4 }}
+                {% else %}
+                  -
+                {% endif %}
+                {% if r.sl_status %}
+                  {% if r.sl_status == 'POSITION' %}
+                    <span class="badge bg-info text-dark ms-1">Open</span>
+                  {% elif r.sl_status == 'CLOSED' %}
+                    <span class="badge bg-success ms-1">Closed</span>
+                  {% elif r.sl_status == 'CANCELLED' %}
+                    <span class="badge bg-secondary ms-1">Cancelled</span>
+                  {% elif r.sl_status == 'FAILED' %}
+                    <span class="badge bg-danger ms-1">Failed</span>
                   {% endif %}
-                  {% if r.sl_status %}
-                    {% if r.sl_status == 'POSITION' %}
-                      <span class="badge bg-info text-dark ms-1">Open</span>
-                    {% elif r.sl_status == 'CLOSED' %}
-                      <span class="badge bg-success ms-1">Closed</span>
-                    {% elif r.sl_status == 'CANCELLED' %}
-                      <span class="badge bg-secondary ms-1">Cancelled</span>
-                    {% elif r.sl_status == 'FAILED' %}
-                      <span class="badge bg-danger ms-1">Failed</span>
-                    {% endif %}
-                  {% endif %}
-                {% else %}-{% endif %}
+                {% endif %}
               </td>
               <td>
                 {% if r.market == 'Futures' and r.status == 'POSITION' %}
@@ -122,7 +120,7 @@
                   <!-- SL button -->
                   <button class="btn btn-sm btn-outline-danger me-1" title="{% if r.sl_price and r.sl_price > 0 %}Edit SL{% else %}Add SL{% endif %}"
                           data-bs-toggle="modal" data-bs-target="#slModal"
-                          data-order-id="{{ r.id }}" data-symbol="{{ r.symbol }}" data-current="{{ r.sl_price|default_if_none:'' }}">
+                          data-order-id="{{ r.id }}" data-symbol="{{ r.symbol }}" data-current="{{ r.sl_price|default_if_none:'' }}" data-market="{{ r.market }}">
                     {% if r.sl_price and r.sl_price > 0 %}<i class="bi bi-pencil-square"></i>{% else %}<i class="bi bi-plus-circle"></i>{% endif %}
                   </button>
                   <!-- Close button -->
@@ -153,6 +151,12 @@
                   </form>
                 {% elif r.market == 'Spot' and r.status == 'POSITION' %}
                   <!-- Close button for Spot -->
+                  <!-- SL button for Spot -->
+                  <button class="btn btn-sm btn-outline-danger me-1" title="{% if r.sl_price and r.sl_price > 0 %}Edit SL{% else %}Add SL{% endif %}"
+                          data-bs-toggle="modal" data-bs-target="#slModal"
+                          data-order-id="{{ r.id }}" data-symbol="{{ r.symbol }}" data-current="{{ r.sl_price|default_if_none:'' }}" data-market="{{ r.market }}">
+                    {% if r.sl_price and r.sl_price > 0 %}<i class="bi bi-pencil-square"></i>{% else %}<i class="bi bi-plus-circle"></i>{% endif %}
+                  </button>
                   <form method="post" action="{% url 'trading:close_spot_order' %}" style="display:inline" onsubmit="return confirm('Close this position?')">
                     {% csrf_token %}
                     <input type="hidden" name="order_id" value="{{ r.id }}" />
@@ -308,9 +312,15 @@
       const orderId = btn.getAttribute('data-order-id');
       const symbol = btn.getAttribute('data-symbol');
       const current = btn.getAttribute('data-current');
+      const market = btn.getAttribute('data-market');
       document.getElementById('slModalOrderId').value = orderId;
       document.getElementById('slModalSymbol').textContent = `(${symbol})`;
       document.getElementById('slModalValue').value = current && current !== '0' ? current : '';
+      // Switch form action based on market
+      const form = slModal.querySelector('form');
+      const futAction = "{% url 'trading:update_futures_tp_sl' %}";
+      const spotAction = "{% url 'trading:update_spot_sl' %}";
+      form.setAttribute('action', market === 'Spot' ? spotAction : futAction);
     });
   }
   const tpsModal = document.getElementById('tpsModal');

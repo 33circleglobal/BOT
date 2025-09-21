@@ -302,6 +302,8 @@ def history_view(request):
                 "pnl": float(o.pnl),
                 "pnl_pct": float(o.pnl_percentage),
                 "entry_price": float(o.entry_price),
+                "sl_price": float(o.stop_loss_price or 0),
+                "sl_status": o.stop_loss_status,
                 "quantity": float(o.final_quantity or o.order_quantity),
                 "ignore": bool(getattr(o, "ignore_opposite_signal", False)),
                 "created_at": o.created_at,
