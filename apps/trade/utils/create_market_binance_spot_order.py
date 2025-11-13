@@ -12,7 +12,10 @@ import logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-def create_binance_spot_order(side: str, symbol: str, user: User, *, sl: float | None = None):
+
+def create_binance_spot_order(
+    side: str, symbol: str, user: User, *, sl: float | None = None
+):
     try:
         side = side.lower()
         position = 100
@@ -67,7 +70,9 @@ def create_binance_spot_order(side: str, symbol: str, user: User, *, sl: float |
             logger.error(f"Insufficient balance for {symbol} {side} order")
             return False
 
-        order = exchange.create_order(symbol=symbol, side=side, type="market", amount=quantity)
+        order = exchange.create_order(
+            symbol=symbol, side=side, type="market", amount=quantity
+        )
 
         # Extract detailed fee information
         fee_details = {
@@ -102,9 +107,13 @@ def create_binance_spot_order(side: str, symbol: str, user: User, *, sl: float |
             if side == "buy":
                 sl_side = "sell"
                 amount = float(created.final_quantity) or float(quantity)
-                sl_price = float(sl) if sl else compute_default_sl(order["average"], side)
+                sl_price = (
+                    float(sl) if sl else compute_default_sl(order["average"], side)
+                )
                 # Binance spot typically uses STOP_LOSS_LIMIT; set price equal to stopPrice (tight limit)
-                params = {"stopPrice": float(exchange.priceToPrecision(symbol, sl_price))}
+                params = {
+                    "stopPrice": float(exchange.priceToPrecision(symbol, sl_price))
+                }
                 limit_price = params["stopPrice"]  # simple approximation
                 # Place protective stop as limit stop to increase acceptance on spot markets
                 sl_created = exchange.create_order(
@@ -119,7 +128,13 @@ def create_binance_spot_order(side: str, symbol: str, user: User, *, sl: float |
                     created.stop_loss_order_id = sl_created.get("id", "")
                     created.stop_loss_price = params["stopPrice"]
                     created.stop_loss_status = SpotOrder.TradeStatus.POSITION
-                    created.save(update_fields=["stop_loss_order_id", "stop_loss_price", "stop_loss_status"])
+                    created.save(
+                        update_fields=[
+                            "stop_loss_order_id",
+                            "stop_loss_price",
+                            "stop_loss_status",
+                        ]
+                    )
                 except Exception:
                     pass
         except Exception as e:
@@ -139,5 +154,7 @@ def create_binance_spot_order(side: str, symbol: str, user: User, *, sl: float |
         logger.error(f"Invalid order parameters for {user.username}: {str(e)}")
         return False
     except Exception as e:
-        logger.error(f"Error creating spot order for {user.username}: {str(e)}", exc_info=True)
+        logger.error(
+            f"Error creating spot order for {user.username}: {str(e)}", exc_info=True
+        )
         return False

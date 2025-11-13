@@ -29,7 +29,7 @@ def get_symbol_last_price(exchange, symbol: str):
         return False
 
 
-def compute_default_sl(entry_price: float, side: str, pct: float = 0.01) -> float:
+def compute_default_sl(entry_price: float, side: str, pct: float = 0.0025) -> float:
     """Compute default stop-loss price at +/- pct from entry based on side."""
     side = side.lower()
     if side == "buy":
