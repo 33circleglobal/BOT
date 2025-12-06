@@ -163,6 +163,13 @@ FERNET_SECRET_KEY = config("FERNET_SECRET_KEY")
 LOGIN_URL = "/login/"
 
 
+# Feature flags to control protective stop-loss behavior
+# Set these via environment to re-enable if needed.
+# Example: DISABLE_SPOT_STOP_LOSS=False DISABLE_FUTURES_STOP_LOSS=False
+DISABLE_SPOT_STOP_LOSS = config("DISABLE_SPOT_STOP_LOSS", default=True, cast=bool)
+DISABLE_FUTURES_STOP_LOSS = config("DISABLE_FUTURES_STOP_LOSS", default=True, cast=bool)
+
+
 CRONJOBS = [
     (
         "*/5 * * * *",

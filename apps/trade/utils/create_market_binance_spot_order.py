@@ -8,6 +8,7 @@ from apps.trade.utils.common import (
 
 import ccxt
 import logging
+from django.conf import settings
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -102,43 +103,50 @@ def create_binance_spot_order(
             user=user,
         )
 
-        # Attempt to place a protective stop-loss order for spot
-        try:
-            if side == "buy":
-                sl_side = "sell"
-                amount = float(created.final_quantity) or float(quantity)
-                sl_price = (
-                    float(sl) if sl else compute_default_sl(order["average"], side)
-                )
-                # Binance spot typically uses STOP_LOSS_LIMIT; set price equal to stopPrice (tight limit)
-                params = {
-                    "stopPrice": float(exchange.priceToPrecision(symbol, sl_price))
-                }
-                limit_price = params["stopPrice"]  # simple approximation
-                # Place protective stop as limit stop to increase acceptance on spot markets
-                sl_created = exchange.create_order(
-                    symbol=symbol,
-                    side=sl_side,
-                    type="STOP_LOSS_LIMIT",
-                    amount=float(exchange.amountToPrecision(symbol, amount)),
-                    price=float(exchange.priceToPrecision(symbol, limit_price)),
-                    params=params,
-                )
-                try:
-                    created.stop_loss_order_id = sl_created.get("id", "")
-                    created.stop_loss_price = params["stopPrice"]
-                    created.stop_loss_status = SpotOrder.TradeStatus.POSITION
-                    created.save(
-                        update_fields=[
-                            "stop_loss_order_id",
-                            "stop_loss_price",
-                            "stop_loss_status",
-                        ]
+        # Attempt to place a protective stop-loss order for spot, unless disabled
+        if not settings.DISABLE_SPOT_STOP_LOSS:
+            try:
+                if side == "buy":
+                    sl_side = "sell"
+                    amount = float(created.final_quantity) or float(quantity)
+                    sl_price = (
+                        float(sl) if sl else compute_default_sl(order["average"], side)
                     )
-                except Exception:
-                    pass
-        except Exception as e:
-            logger.warning(f"Failed to place spot stop-loss for {symbol}: {e}")
+                    # Binance spot typically uses STOP_LOSS_LIMIT; set price equal to stopPrice (tight limit)
+                    params = {
+                        "stopPrice": float(exchange.priceToPrecision(symbol, sl_price))
+                    }
+                    limit_price = params["stopPrice"]  # simple approximation
+                    # Place protective stop as limit stop to increase acceptance on spot markets
+                    sl_created = exchange.create_order(
+                        symbol=symbol,
+                        side=sl_side,
+                        type="STOP_LOSS_LIMIT",
+                        amount=float(exchange.amountToPrecision(symbol, amount)),
+                        price=float(exchange.priceToPrecision(symbol, limit_price)),
+                        params=params,
+                    )
+                    try:
+                        created.stop_loss_order_id = sl_created.get("id", "")
+                        created.stop_loss_price = params["stopPrice"]
+                        created.stop_loss_status = SpotOrder.TradeStatus.POSITION
+                        created.save(
+                            update_fields=[
+                                "stop_loss_order_id",
+                                "stop_loss_price",
+                                "stop_loss_status",
+                            ]
+                        )
+                    except Exception:
+                        pass
+            except Exception as e:
+                logger.warning(f"Failed to place spot stop-loss for {symbol}: {e}")
+        else:
+            try:
+                created.stop_loss_status = SpotOrder.TradeStatus.CANCELLED
+                created.save(update_fields=["stop_loss_status"])
+            except Exception:
+                pass
 
         logger.info(
             f"Spot {side} order created for {user.username}: "

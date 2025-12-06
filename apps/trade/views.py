@@ -23,6 +23,7 @@ from apps.trade.utils.close_order import quick_close_position
 from apps.trade.utils.close_market_order_spot import quick_close_spot_position
 from apps.trade.utils.refresh_positions import refresh_futures_order, refresh_spot_order
 from apps.trade.models import SpotOrder
+from django.conf import settings
 
 
 @csrf_exempt
@@ -94,6 +95,21 @@ def update_futures_tp_sl(request):
 
         # Handle SL or TP independently
         if mode == "sl":
+            # If SL feature is disabled for futures, cancel any existing remote SL and mark as CANCELLED
+            if settings.DISABLE_FUTURES_STOP_LOSS:
+                try:
+                    if order.stop_loss_order_id:
+                        try:
+                            ex.cancel_order(id=order.stop_loss_order_id, symbol=symbol)
+                        except Exception:
+                            pass
+                except Exception:
+                    pass
+                order.stop_loss_status = FutureOrder.TradeStatus.CANCELLED
+                # Do not blank stop_loss_order_id to avoid unique constraint conflicts
+                order.save(update_fields=["stop_loss_status"])
+                messages.info(request, "Futures SL is disabled by configuration")
+                return redirect("accounts:history")
             if sl:
                 # Validate SL relative to current price and direction
                 current = float(get_symbol_last_price(ex, symbol) or 0)
@@ -134,7 +150,7 @@ def update_futures_tp_sl(request):
                         ex.cancel_order(id=order.stop_loss_order_id, symbol=symbol)
                     except Exception:
                         pass
-                order.stop_loss_order_id = ""
+                # Avoid setting blank string to prevent unique conflicts
                 order.stop_loss_price = 0
                 order.stop_loss_status = FutureOrder.TradeStatus.CANCELLED
         elif mode == "tp":
@@ -235,6 +251,19 @@ def update_spot_sl(request):
         amount = float(order.final_quantity or order.order_quantity)
 
         if sl:
+            if settings.DISABLE_SPOT_STOP_LOSS:
+                # Respect configuration: disable SL placement
+                if order.stop_loss_order_id:
+                    try:
+                        ex.cancel_order(id=order.stop_loss_order_id, symbol=symbol)
+                    except Exception:
+                        pass
+                order.stop_loss_order_id = ""
+                order.stop_loss_price = 0
+                order.stop_loss_status = SpotOrder.TradeStatus.CANCELLED
+                order.save()
+                messages.info(request, "Spot SL is disabled by configuration")
+                return redirect("accounts:history")
             current = float(get_symbol_last_price(ex, symbol) or 0)
             sl_val = float(sl)
             if (

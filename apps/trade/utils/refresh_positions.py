@@ -19,8 +19,8 @@ def refresh_futures_order(order: FutureOrder) -> bool:
 
         updated = False
 
-        # Check SL
-        if order.stop_loss_order_id:
+        # Check SL only if it's active (POSITION)
+        if order.stop_loss_status == FutureOrder.TradeStatus.POSITION and order.stop_loss_order_id:
             try:
                 sl_info = ex.fetch_order(id=order.stop_loss_order_id, symbol=symbol)
                 if sl_info.get("remaining") == 0 and sl_info.get("status") == "closed":
@@ -130,8 +130,8 @@ def refresh_spot_order(order: SpotOrder) -> bool:
         symbol = order.symbol
         side = "sell" if order.direction == SpotOrder.TradeDirection.LONG else "buy"
 
-        # Prefer precise check using stored SL order id
-        if order.stop_loss_order_id:
+        # Prefer precise check using stored SL order id when active
+        if order.stop_loss_status == SpotOrder.TradeStatus.POSITION and order.stop_loss_order_id:
             try:
                 sl_info = ex.fetch_order(id=order.stop_loss_order_id, symbol=symbol)
                 if sl_info.get("remaining") == 0 and sl_info.get("status") == "closed":

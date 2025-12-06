@@ -32,8 +32,8 @@ def refresh_orders():
             api_key=user_binance_key.api_key, api_secret=user_binance_key.api_secret
         )
 
-        # Check SL first
-        if order.stop_loss_order_id:
+        # Check SL first only if active (POSITION)
+        if order.stop_loss_status == FutureOrder.TradeStatus.POSITION and order.stop_loss_order_id:
             try:
                 sl_info = exchange.fetch_order(id=order.stop_loss_order_id, symbol=order.symbol)
                 if sl_info.get("remaining") == 0 and sl_info.get("status") == "closed":

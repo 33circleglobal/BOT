@@ -9,6 +9,8 @@ from apps.trade.utils.common import (
 
 import ccxt
 import logging
+from django.conf import settings
+from uuid import uuid4
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -94,20 +96,23 @@ def create_binance_future_order(
             if (side == "buy" and t <= cur) or (side == "sell" and t >= cur):
                 raise ValueError("Invalid TP relative to current price")
 
-        # Stop loss: provided or default 1%
-        stop_price = (
-            float(sl) if sl is not None else compute_default_sl(order["average"], side)
-        )
-        sl_order = exchange.create_order(
-            symbol=symbol,
-            side=inv_side,
-            type="STOP_MARKET",
-            amount=quantity,
-            params={
-                "stopPrice": float(exchange.priceToPrecision(symbol, stop_price)),
-                "reduceOnly": True,
-            },
-        )
+        # Stop loss: optionally disabled via feature flag
+        sl_order = None
+        stop_price = None
+        if not settings.DISABLE_FUTURES_STOP_LOSS:
+            stop_price = (
+                float(sl) if sl is not None else compute_default_sl(order["average"], side)
+            )
+            sl_order = exchange.create_order(
+                symbol=symbol,
+                side=inv_side,
+                type="STOP_MARKET",
+                amount=quantity,
+                params={
+                    "stopPrice": float(exchange.priceToPrecision(symbol, stop_price)),
+                    "reduceOnly": True,
+                },
+            )
 
         # Optional single TP or multiple TPs
         tp_order = None
@@ -192,11 +197,19 @@ def create_binance_future_order(
         entry_fee_currency = fee.get("currency", "USDT")
         total_fee = fee.get("cost", 0)
 
-        stop_loss_price = (
-            sl_order.get("price")
-            or sl_order.get("stopPrice")
-            or sl_order.get("triggerPrice")
-        )
+        # Capture SL info when enabled; otherwise mark as cancelled with a unique placeholder id
+        if sl_order:
+            stop_loss_price = (
+                sl_order.get("price")
+                or sl_order.get("stopPrice")
+                or sl_order.get("triggerPrice")
+            )
+            sl_id = sl_order["id"]
+            sl_status = FutureOrder.TradeStatus.POSITION
+        else:
+            stop_loss_price = 0
+            sl_id = f"DISABLED-{uuid4()}"
+            sl_status = FutureOrder.TradeStatus.CANCELLED
 
         fobj = FutureOrder.objects.create(
             order_id=order["id"],
@@ -208,8 +221,9 @@ def create_binance_future_order(
             entry_fee=entry_fee,
             entry_fee_currency=entry_fee_currency,
             total_fee=total_fee,
-            stop_loss_order_id=sl_order["id"],
+            stop_loss_order_id=sl_id,
             stop_loss_price=stop_loss_price,
+            stop_loss_status=sl_status,
             user=user,
         )
 
