@@ -47,6 +47,42 @@ def apply_leverage(exchange, symbol, leverage):
         return False
 
 
+def create_algo_order(
+    exchange,
+    symbol,
+    side,
+    order_type,
+    quantity,
+    trigger_price,
+    reduce_only=True,
+    working_type=None,
+):
+    """
+    Places a conditional order (STOP_MARKET / TAKE_PROFIT_MARKET / etc.)
+    via Binance's /fapi/v1/algoOrder endpoint, which conditional orders
+    were migrated to as of Dec 2025. Regular create_order() with these
+    types no longer works.
+    """
+    params = {
+        "symbol": exchange.market_id(symbol),
+        "side": side.upper(),
+        "type": order_type,  # "STOP_MARKET" or "TAKE_PROFIT_MARKET"
+        "algoType": "CONDITIONAL",
+        "quantity": quantity,
+        "triggerPrice": trigger_price,  # note: triggerPrice, not stopPrice
+        "reduceOnly": reduce_only,
+    }
+    if working_type:
+        params["workingType"] = working_type  # "MARK_PRICE" or "CONTRACT_PRICE"
+
+    result = exchange.fapiprivate_post_algoorder(params)
+
+    # Normalize response so downstream code can treat it like a regular
+    # ccxt order dict (algo orders return algoId, not id/orderId)
+    result["id"] = result.get("algoId") or result.get("clientAlgoId")
+    return result
+
+
 def create_binance_future_order(
     side: str,
     symbol: str,
@@ -56,7 +92,7 @@ def create_binance_future_order(
     tp: float | None = None,
     tps: list | None = None,
     leverage: int = 5,
-    position_pct: float = 90.0,
+    position_pct: float = 10,
 ):
     try:
         margin_mode = "crossed"
@@ -83,6 +119,7 @@ def create_binance_future_order(
         order = exchange.create_order(
             symbol=symbol, side=side, type="market", amount=quantity
         )
+        logger.info(f"order: {order}")
 
         inv_side = opposite_side(side)
         # Validate manual SL/TP against current price to avoid immediate triggers
@@ -101,18 +138,24 @@ def create_binance_future_order(
         stop_price = None
         if not settings.DISABLE_FUTURES_STOP_LOSS:
             stop_price = (
-                float(sl) if sl is not None else compute_default_sl(order["average"], side)
+                float(sl)
+                if sl is not None
+                else compute_default_sl(order["average"], side)
             )
-            sl_order = exchange.create_order(
-                symbol=symbol,
-                side=inv_side,
-                type="STOP_MARKET",
-                amount=quantity,
-                params={
-                    "stopPrice": float(exchange.priceToPrecision(symbol, stop_price)),
-                    "reduceOnly": True,
-                },
-            )
+            sl_trigger = float(exchange.priceToPrecision(symbol, stop_price))
+            try:
+                sl_order = create_algo_order(
+                    exchange,
+                    symbol,
+                    inv_side,
+                    "STOP_MARKET",
+                    quantity,
+                    trigger_price=sl_trigger,
+                    reduce_only=True,
+                )
+            except Exception as e:
+                logger.error(f"Error creating SL algo order for {symbol}: {e}")
+                sl_order = None
 
         # Optional single TP or multiple TPs
         tp_order = None
@@ -150,12 +193,14 @@ def create_binance_future_order(
                 if min_cost and (part_qty_p * stop_p) < min_cost:
                     continue
                 try:
-                    tp_o = exchange.create_order(
-                        symbol=symbol,
-                        side=inv_side,
-                        type="TAKE_PROFIT_MARKET",
-                        amount=part_qty_p,
-                        params={"stopPrice": stop_p, "reduceOnly": True},
+                    tp_o = create_algo_order(
+                        exchange,
+                        symbol,
+                        inv_side,
+                        "TAKE_PROFIT_MARKET",
+                        part_qty_p,
+                        trigger_price=stop_p,
+                        reduce_only=True,
                     )
                     created_tps.append(
                         {
@@ -170,12 +215,14 @@ def create_binance_future_order(
         elif tp is not None:
             # Map single TP to a child TP covering 100%
             tp_price = float(exchange.priceToPrecision(symbol, float(tp)))
-            tp_o = exchange.create_order(
-                symbol=symbol,
-                side=inv_side,
-                type="TAKE_PROFIT_MARKET",
-                amount=quantity,
-                params={"stopPrice": tp_price, "reduceOnly": True},
+            tp_o = create_algo_order(
+                exchange,
+                symbol,
+                inv_side,
+                "TAKE_PROFIT_MARKET",
+                quantity,
+                trigger_price=tp_price,
+                reduce_only=True,
             )
             created_tps.append(
                 {
@@ -203,6 +250,7 @@ def create_binance_future_order(
                 sl_order.get("price")
                 or sl_order.get("stopPrice")
                 or sl_order.get("triggerPrice")
+                or sl_trigger
             )
             sl_id = sl_order["id"]
             sl_status = FutureOrder.TradeStatus.POSITION
@@ -210,6 +258,13 @@ def create_binance_future_order(
             stop_loss_price = 0
             sl_id = f"DISABLED-{uuid4()}"
             sl_status = FutureOrder.TradeStatus.CANCELLED
+
+        order = exchange.fetch_order(
+            order["id"],
+            symbol,
+        )
+
+        logger.info(f"order: {order}")
 
         fobj = FutureOrder.objects.create(
             order_id=order["id"],

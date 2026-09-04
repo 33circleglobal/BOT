@@ -177,3 +177,19 @@ CRONJOBS = [
         ">> /tmp/refresh_stop_loss.log",
     )
 ]
+
+
+# _______________Cache settings_______________________
+CACHES = {
+    "default": {
+        "BACKEND": "django_redis.cache.RedisCache",
+        "LOCATION": os.environ.get("CELERY_BROKER_URL", "redis://127.0.0.1:6379"),
+        "OPTIONS": {
+            "CLIENT_CLASS": "django_redis.client.DefaultClient",
+            "CONNECTION_POOL_KWARGS": {
+                "max_connections": 100,
+                "retry_on_timeout": True,
+            },
+        },
+    }
+}
