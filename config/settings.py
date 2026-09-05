@@ -47,6 +47,7 @@ INSTALLED_APPS = [
     "django.contrib.messages",
     "django.contrib.staticfiles",
     "django_crontab",
+    "django_celery_beat",
     "apps.accounts",
     "apps.trade",
 ]
@@ -170,13 +171,13 @@ DISABLE_SPOT_STOP_LOSS = config("DISABLE_SPOT_STOP_LOSS", default=True, cast=boo
 DISABLE_FUTURES_STOP_LOSS = config("DISABLE_FUTURES_STOP_LOSS", default=True, cast=bool)
 
 
-CRONJOBS = [
-    (
-        "*/5 * * * *",
-        "apps.trade.crons.refresh_stop_loss.refresh_orders",
-        ">> /tmp/refresh_stop_loss.log",
-    )
-]
+# CRONJOBS = [
+#     (
+#         "*/5 * * * *",
+#         "apps.trade.crons.refresh_stop_loss.refresh_orders",
+#         ">> /tmp/refresh_stop_loss.log",
+#     )
+# ]
 
 
 # _______________Cache settings_______________________

@@ -1,0 +1,26 @@
+<div class="table-responsive">
+  <table class="table table-hover table-sm align-middle">
+    <thead>
+      <tr>
+        <th>Time</th>
+        <th>Symbol</th>
+        <th>Dir</th>
+        <th>Status</th>
+        <th>Qty</th>
+        <th>Entry</th>
+        <th>PnL</th>
+        <th>PnL %</th>
+        <th>TP</th>
+        <th>SL</th>
+        <th>Actions</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for r in rows %}
+        {% include "partials/history_row.html" %}
+      {% empty %}
+      <tr><td colspan="11" class="text-center text-muted">No records</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>

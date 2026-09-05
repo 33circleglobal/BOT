@@ -5,34 +5,15 @@
   <div class="card border-0 shadow-sm mb-3">
     <div class="card-body">
       <form class="row g-2 align-items-end" method="get">
-        <div class="col-12 col-md-2">
-          <label class="form-label">Market</label>
-          <select name="market" class="form-select">
-            <option value="both" {% if market == 'both' %}selected{% endif %}>Both</option>
-            <option value="spot" {% if market == 'spot' %}selected{% endif %}>Spot</option>
-            <option value="futures" {% if market == 'futures' %}selected{% endif %}>Futures</option>
-          </select>
-        </div>
-        <div class="col-12 col-md-2">
-          <label class="form-label">Status</label>
-          <select name="status" class="form-select">
-            <option value="" {% if not status %}selected{% endif %}>Any</option>
-            <option value="OPEN" {% if status == 'OPEN' %}selected{% endif %}>Open</option>
-            <option value="POSITION" {% if status == 'POSITION' %}selected{% endif %}>Position</option>
-            <option value="CLOSED" {% if status == 'CLOSED' %}selected{% endif %}>Closed</option>
-            <option value="CANCELLED" {% if status == 'CANCELLED' %}selected{% endif %}>Cancelled</option>
-            <option value="FAILED" {% if status == 'FAILED' %}selected{% endif %}>Failed</option>
-          </select>
-        </div>
-        <div class="col-12 col-md-2">
+        <div class="col-12 col-md-4">
           <label class="form-label">Symbol</label>
           <input name="symbol" value="{{ symbol }}" class="form-control" placeholder="e.g. BTCUSDT"/>
         </div>
-        <div class="col-12 col-md-2">
+        <div class="col-12 col-md-3">
           <label class="form-label">From</label>
           <input name="from" value="{{ date_from }}" class="form-control" type="datetime-local"/>
         </div>
-        <div class="col-12 col-md-2">
+        <div class="col-12 col-md-3">
           <label class="form-label">To</label>
           <input name="to" value="{{ date_to }}" class="form-control" type="datetime-local"/>
         </div>
@@ -45,151 +26,29 @@
 
   <div class="card border-0 shadow-sm">
     <div class="card-body">
-      <div class="table-responsive">
-        <table class="table table-hover table-sm align-middle">
-          <thead>
-            <tr>
-              <th>Time</th>
-              <th>Market</th>
-              <th>Symbol</th>
-              <th>Dir</th>
-              <th>Status</th>
-              <th>Qty</th>
-              <th>Entry</th>
-              <th>PnL</th>
-              <th>PnL %</th>
-              <th>TP</th>
-              <th>SL</th>
-              <th>Actions</th>
-            </tr>
-          </thead>
-          <tbody>
-            {% for r in records %}
-            <tr>
-              <td class="text-nowrap">{{ r.created_at|date:"Y-m-d H:i" }}</td>
-              <td><span class="badge bg-dark">{{ r.market }}</span></td>
-              <td>{{ r.symbol }}</td>
-              <td>{{ r.direction }}</td>
-              <td>
-                {% if r.status == 'CLOSED' %}<span class="badge bg-success">{{ r.status }}</span>
-                {% elif r.status == 'POSITION' %}<span class="badge bg-warning text-dark">{{ r.status }}</span>
-                {% elif r.status == 'OPEN' %}<span class="badge bg-info text-dark">{{ r.status }}</span>
-                {% else %}<span class="badge bg-secondary">{{ r.status }}</span>
-                {% endif %}
-              </td>
-              <td>{{ r.quantity|floatformat:4 }}</td>
-              <td>{{ r.entry_price|default_if_none:"-"|floatformat:4 }}</td>
-              <td class="{% if r.pnl >= 0 %}text-success{% else %}text-danger{% endif %}">{{ r.pnl|floatformat:2 }}</td>
-              <td class="{% if r.pnl_pct >= 0 %}text-success{% else %}text-danger{% endif %}">{{ r.pnl_pct|floatformat:2 }}%</td>
-              <td>
-                {% if r.market == 'Futures' %}
-                  {% if r.tp_count and r.tp_count > 0 %}
-                    <span class="text-nowrap">{{ r.tp_closed }}/{{ r.tp_count }} TPs</span>
-                  {% else %}-{% endif %}
-                {% else %}
-                  -
-                {% endif %}
-              </td>
-              <td>
-                {% if r.sl_price and r.sl_price > 0 %}
-                  {{ r.sl_price|floatformat:4 }}
-                {% else %}
-                  -
-                {% endif %}
-                {% if r.sl_status %}
-                  {% if r.sl_status == 'POSITION' %}
-                    <span class="badge bg-info text-dark ms-1">Open</span>
-                  {% elif r.sl_status == 'CLOSED' %}
-                    <span class="badge bg-success ms-1">Closed</span>
-                  {% elif r.sl_status == 'CANCELLED' %}
-                    <span class="badge bg-secondary ms-1">Cancelled</span>
-                  {% elif r.sl_status == 'FAILED' %}
-                    <span class="badge bg-danger ms-1">Failed</span>
-                  {% endif %}
-                {% endif %}
-              </td>
-              <td>
-                {% if r.market == 'Futures' and r.status == 'POSITION' %}
-                  <!-- Manage TPs button -->
-                  <button class="btn btn-sm btn-outline-secondary me-1" title="Manage TPs"
-                          data-bs-toggle="modal" data-bs-target="#tpsModal"
-                          data-order-id="{{ r.id }}" data-symbol="{{ r.symbol }}"
-                          data-tps="{{ r.tps_json|urlencode }}">
-                    <i class="bi bi-list-check"></i>
-                  </button>
-                  <!-- SL button -->
-                  <button class="btn btn-sm btn-outline-danger me-1" title="{% if r.sl_price and r.sl_price > 0 %}Edit SL{% else %}Add SL{% endif %}"
-                          data-bs-toggle="modal" data-bs-target="#slModal"
-                          data-order-id="{{ r.id }}" data-symbol="{{ r.symbol }}" data-current="{{ r.sl_price|default_if_none:'' }}" data-market="{{ r.market }}">
-                    {% if r.sl_price and r.sl_price > 0 %}<i class="bi bi-pencil-square"></i>{% else %}<i class="bi bi-plus-circle"></i>{% endif %}
-                  </button>
-                  <!-- Close button -->
-                  <form method="post" action="{% url 'trading:close_futures_order' %}" style="display:inline" onsubmit="return confirm('Close this position?')">
-                    {% csrf_token %}
-                    <input type="hidden" name="order_id" value="{{ r.id }}" />
-                    <button type="submit" class="btn btn-sm btn-outline-dark" title="Close position">
-                      <i class="bi bi-x-circle"></i>
-                    </button>
-                  </form>
-                  <!-- Refresh button -->
-                  <form method="post" action="{% url 'trading:refresh_order' %}" style="display:inline" class="refresh-form">
-                    {% csrf_token %}
-                    <input type="hidden" name="order_id" value="{{ r.id }}" />
-                    <input type="hidden" name="market" value="{{ r.market }}" />
-                    <button type="submit" class="btn btn-sm btn-outline-success ms-1 refresh-btn" title="Refresh status">
-                      <i class="bi bi-arrow-repeat refresh-icon"></i>
-                    </button>
-                  </form>
-                  <!-- Toggle ignore opposite signals -->
-                  <form method="post" action="{% url 'trading:toggle_ignore_signal' %}" style="display:inline">
-                    {% csrf_token %}
-                    <input type="hidden" name="order_id" value="{{ r.id }}" />
-                    <input type="hidden" name="market" value="{{ r.market }}" />
-                    <button type="submit" class="btn btn-sm {% if r.ignore %}btn-warning{% else %}btn-outline-secondary{% endif %} ms-1" title="{% if r.ignore %}Ignore opposite signals: ON{% else %}Ignore opposite signals: OFF{% endif %}">
-                      {% if r.ignore %}<i class="bi bi-slash-circle-fill"></i>{% else %}<i class="bi bi-slash-circle"></i>{% endif %}
-                    </button>
-                  </form>
-                {% elif r.market == 'Spot' and r.status == 'POSITION' %}
-                  <!-- Close button for Spot -->
-                  <!-- SL button for Spot -->
-                  <button class="btn btn-sm btn-outline-danger me-1" title="{% if r.sl_price and r.sl_price > 0 %}Edit SL{% else %}Add SL{% endif %}"
-                          data-bs-toggle="modal" data-bs-target="#slModal"
-                          data-order-id="{{ r.id }}" data-symbol="{{ r.symbol }}" data-current="{{ r.sl_price|default_if_none:'' }}" data-market="{{ r.market }}">
-                    {% if r.sl_price and r.sl_price > 0 %}<i class="bi bi-pencil-square"></i>{% else %}<i class="bi bi-plus-circle"></i>{% endif %}
-                  </button>
-                  <form method="post" action="{% url 'trading:close_spot_order' %}" style="display:inline" onsubmit="return confirm('Close this position?')">
-                    {% csrf_token %}
-                    <input type="hidden" name="order_id" value="{{ r.id }}" />
-                    <button type="submit" class="btn btn-sm btn-outline-dark" title="Close position">
-                      <i class="bi bi-x-circle"></i>
-                    </button>
-                  </form>
-                  <!-- Refresh button for Spot -->
-                  <form method="post" action="{% url 'trading:refresh_order' %}" style="display:inline" class="refresh-form">
-                    {% csrf_token %}
-                    <input type="hidden" name="order_id" value="{{ r.id }}" />
-                    <input type="hidden" name="market" value="{{ r.market }}" />
-                    <button type="submit" class="btn btn-sm btn-outline-success ms-1 refresh-btn" title="Refresh status">
-                      <i class="bi bi-arrow-repeat refresh-icon"></i>
-                    </button>
-                  </form>
-                  <!-- Toggle ignore opposite signals for Spot -->
-                  <form method="post" action="{% url 'trading:toggle_ignore_signal' %}" style="display:inline">
-                    {% csrf_token %}
-                    <input type="hidden" name="order_id" value="{{ r.id }}" />
-                    <input type="hidden" name="market" value="{{ r.market }}" />
-                    <button type="submit" class="btn btn-sm {% if r.ignore %}btn-warning{% else %}btn-outline-secondary{% endif %} ms-1" title="{% if r.ignore %}Ignore opposite signals: ON{% else %}Ignore opposite signals: OFF{% endif %}">
-                      {% if r.ignore %}<i class="bi bi-slash-circle-fill"></i>{% else %}<i class="bi bi-slash-circle"></i>{% endif %}
-                    </button>
-                  </form>
-                {% else %}-{% endif %}
-              </td>
-            </tr>
-            {% empty %}
-            <tr><td colspan="10" class="text-center text-muted">No records</td></tr>
-            {% endfor %}
-          </tbody>
-        </table>
+      <ul class="nav nav-tabs" id="marketTabs" role="tablist">
+        <li class="nav-item" role="presentation">
+          <button class="nav-link active" id="spot-market-tab" data-bs-toggle="tab" data-bs-target="#spot-market-pane" type="button" role="tab">
+            Spot
+          </button>
+        </li>
+        <li class="nav-item" role="presentation">
+          <button class="nav-link" id="futures-market-tab" data-bs-toggle="tab" data-bs-target="#futures-market-pane" type="button" role="tab">
+            Futures
+          </button>
+        </li>
+      </ul>
+      <div class="tab-content pt-3">
+        <div class="tab-pane fade show active" id="spot-market-pane" role="tabpanel">
+          {% with buckets=spot_buckets counts=spot_counts prefix="spot" %}
+            {% include "partials/history_market_pane.html" %}
+          {% endwith %}
+        </div>
+        <div class="tab-pane fade" id="futures-market-pane" role="tabpanel">
+          {% with buckets=fut_buckets counts=fut_counts prefix="fut" %}
+            {% include "partials/history_market_pane.html" %}
+          {% endwith %}
+        </div>
       </div>
     </div>
   </div>
@@ -419,5 +278,180 @@
       }
     });
   });
+
+  // --- Live PnL via Binance websocket ---
+  (function () {
+    function normSymbol(sym) {
+      return (sym || "").replace("/", "").toUpperCase();
+    }
+
+    function collectTargets(market) {
+      const els = document.querySelectorAll(
+        '[data-live-pnl="1"][data-market="' + market + '"]'
+      );
+      const map = {};
+      els.forEach((el) => {
+        const sym = normSymbol(el.dataset.symbol);
+        if (!map[sym]) map[sym] = [];
+        map[sym].push(el);
+      });
+      return map;
+    }
+
+    function computePnl(market, direction, entry, qty, mark, leverage) {
+      if (!entry || !qty || !isFinite(mark)) return null;
+      const diff = direction === "LONG" ? mark - entry : entry - mark;
+      const pnl = diff * qty;
+      const notional = entry * qty;
+      let pct;
+      if (market === "Futures") {
+        // Binance shows ROE% = unrealized PnL / initial margin, where
+        // initial margin = notional / leverage.
+        const lev = leverage && leverage > 0 ? leverage : 1;
+        const margin = notional / lev;
+        pct = margin ? (pnl / margin) * 100 : 0;
+      } else {
+        pct = notional ? (pnl / notional) * 100 : 0;
+      }
+      return { pnl, pct };
+    }
+
+    function paint(el, value, isPct) {
+      if (!el) return;
+      el.textContent = isPct ? value.toFixed(2) + "%" : value.toFixed(2);
+      el.classList.toggle("text-success", value >= 0);
+      el.classList.toggle("text-danger", value < 0);
+    }
+
+    function updateFromMark(el, mark) {
+      const entry = parseFloat(el.dataset.entry);
+      const qty = parseFloat(el.dataset.qty);
+      const leverage = parseFloat(el.dataset.leverage) || 1;
+      const direction = el.dataset.direction;
+      const market = el.dataset.market;
+      const orderId = el.dataset.orderId;
+      const result = computePnl(market, direction, entry, qty, mark, leverage);
+      if (!result) return;
+      paint(document.getElementById("live-pnl-" + market + "-" + orderId), result.pnl, false);
+      paint(document.getElementById("live-pnl-pct-" + market + "-" + orderId), result.pct, true);
+    }
+
+    // REST polling fallback — used when a market's websocket data plane
+    // stalls (handshake succeeds but no ticks arrive), which some networks
+    // do specifically for fstream.binance.com while stream.binance.com works fine.
+    function startRestFallback(market, targets) {
+      const symbols = Object.keys(targets);
+      if (symbols.length === 0) return;
+      const restBase =
+        market === "Futures"
+          ? "https://fapi.binance.com/fapi/v1/ticker/price"
+          : "https://api.binance.com/api/v3/ticker/price";
+
+      async function tick() {
+        await Promise.all(
+          symbols.map(async (sym) => {
+            try {
+              const res = await fetch(restBase + "?symbol=" + sym);
+              if (!res.ok) return;
+              const data = await res.json();
+              const mark = parseFloat(data.price);
+              const els = targets[sym];
+              if (els) els.forEach((el) => updateFromMark(el, mark));
+            } catch (e) {
+              /* ignore single-symbol failure */
+            }
+          })
+        );
+      }
+
+      tick();
+      const intervalId = setInterval(tick, 3000);
+      window.addEventListener("beforeunload", () => clearInterval(intervalId));
+    }
+
+    function connect(market, streamHost) {
+      const targets = collectTargets(market);
+      const symbols = Object.keys(targets);
+      if (symbols.length === 0) return;
+
+      const streams = symbols.map((s) => s.toLowerCase() + "@ticker").join("/");
+      const url = streamHost + "/stream?streams=" + streams;
+      let ws;
+      let closedByUs = false;
+      let fallbackActive = false;
+      let retryDelay = 2000;
+      let watchdog;
+
+      // If no tick arrives within this window of connecting (or since the
+      // last tick), assume the data plane is blocked and switch to REST.
+      function armWatchdog() {
+        clearTimeout(watchdog);
+        watchdog = setTimeout(() => {
+          if (fallbackActive) return;
+          fallbackActive = true;
+          closedByUs = true;
+          try {
+            ws.close();
+          } catch (e) {
+            /* noop */
+          }
+          startRestFallback(market, targets);
+        }, 8000);
+      }
+
+      function open() {
+        try {
+          ws = new WebSocket(url);
+        } catch (e) {
+          startRestFallback(market, targets);
+          return;
+        }
+        ws.onopen = () => {
+          retryDelay = 2000;
+          armWatchdog();
+        };
+        ws.onmessage = (evt) => {
+          armWatchdog();
+          try {
+            const msg = JSON.parse(evt.data);
+            const d = msg && msg.data;
+            if (!d || !d.s || !d.c) return;
+            const mark = parseFloat(d.c);
+            const els = targets[d.s];
+            if (els) els.forEach((el) => updateFromMark(el, mark));
+          } catch (e) {
+            /* ignore malformed message */
+          }
+        };
+        ws.onclose = () => {
+          if (closedByUs || fallbackActive) return;
+          setTimeout(open, retryDelay);
+          retryDelay = Math.min(retryDelay * 1.5, 15000);
+        };
+        ws.onerror = () => {
+          try {
+            ws.close();
+          } catch (e) {
+            /* noop */
+          }
+        };
+      }
+
+      open();
+
+      window.addEventListener("beforeunload", () => {
+        closedByUs = true;
+        clearTimeout(watchdog);
+        try {
+          ws.close();
+        } catch (e) {
+          /* noop */
+        }
+      });
+    }
+
+    connect("Spot", "wss://stream.binance.com:9443");
+    connect("Futures", "wss://fstream.binance.com");
+  })();
 </script>
 {% endblock %}

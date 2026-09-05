@@ -5,6 +5,7 @@ from apps.trade.utils.common import (
     get_symbol_last_price,
     compute_default_sl,
 )
+from apps.trade.utils.risk_guard import can_open_spot_position
 
 import ccxt
 import logging
@@ -20,6 +21,13 @@ def create_binance_spot_order(
     try:
         side = side.lower()
         position = 100
+
+        allowed, reason = can_open_spot_position(user, symbol)
+        if not allowed:
+            logger.info(
+                f"[risk] Skipping spot order for {user.username} {symbol}: {reason}"
+            )
+            return False
 
         user_binance_key = UserKey.objects.get(user=user, is_active=True)
         exchange = make_spot_exchange(

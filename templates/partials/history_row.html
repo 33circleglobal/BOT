@@ -1,0 +1,125 @@
+<tr>
+  <td class="text-nowrap">{{ r.created_at|date:"Y-m-d H:i" }}</td>
+  <td>{{ r.symbol }}</td>
+  <td>{{ r.direction }}</td>
+  <td>
+    {% if r.status == 'CLOSED' %}<span class="badge bg-success">{{ r.status }}</span>
+    {% elif r.status == 'POSITION' %}<span class="badge bg-warning text-dark">{{ r.status }}</span>
+    {% elif r.status == 'OPEN' %}<span class="badge bg-info text-dark">{{ r.status }}</span>
+    {% else %}<span class="badge bg-secondary">{{ r.status }}</span>
+    {% endif %}
+  </td>
+  <td>{{ r.quantity|floatformat:4 }}</td>
+  <td>{{ r.entry_price|default_if_none:"-"|floatformat:4 }}</td>
+  <td id="live-pnl-{{ r.market }}-{{ r.id }}"
+      class="{% if r.pnl >= 0 %}text-success{% else %}text-danger{% endif %}"
+      {% if r.status == 'POSITION' %}
+      data-live-pnl="1" data-order-id="{{ r.id }}" data-market="{{ r.market }}"
+      data-symbol="{{ r.symbol }}" data-direction="{{ r.direction }}"
+      data-entry="{{ r.entry_price }}" data-qty="{{ r.quantity }}"
+      data-leverage="{{ r.leverage|default:1 }}"
+      {% endif %}>{{ r.pnl|floatformat:2 }}</td>
+  <td id="live-pnl-pct-{{ r.market }}-{{ r.id }}" class="{% if r.pnl_pct >= 0 %}text-success{% else %}text-danger{% endif %}">{{ r.pnl_pct|floatformat:2 }}%</td>
+  <td>
+    {% if r.market == 'Futures' %}
+      {% if r.tp_count and r.tp_count > 0 %}
+        <span class="text-nowrap">{{ r.tp_closed }}/{{ r.tp_count }} TPs</span>
+      {% else %}-{% endif %}
+    {% else %}
+      -
+    {% endif %}
+  </td>
+  <td>
+    {% if r.sl_price and r.sl_price > 0 %}
+      {{ r.sl_price|floatformat:4 }}
+    {% else %}
+      -
+    {% endif %}
+    {% if r.sl_status %}
+      {% if r.sl_status == 'POSITION' %}
+        <span class="badge bg-info text-dark ms-1">Open</span>
+      {% elif r.sl_status == 'CLOSED' %}
+        <span class="badge bg-success ms-1">Closed</span>
+      {% elif r.sl_status == 'CANCELLED' %}
+        <span class="badge bg-secondary ms-1">Cancelled</span>
+      {% elif r.sl_status == 'FAILED' %}
+        <span class="badge bg-danger ms-1">Failed</span>
+      {% endif %}
+    {% endif %}
+  </td>
+  <td>
+    {% if r.market == 'Futures' and r.status == 'POSITION' %}
+      <!-- Manage TPs button -->
+      <button class="btn btn-sm btn-outline-secondary me-1" title="Manage TPs"
+              data-bs-toggle="modal" data-bs-target="#tpsModal"
+              data-order-id="{{ r.id }}" data-symbol="{{ r.symbol }}"
+              data-tps="{{ r.tps_json|urlencode }}">
+        <i class="bi bi-list-check"></i>
+      </button>
+      <!-- SL button -->
+      <button class="btn btn-sm btn-outline-danger me-1" title="{% if r.sl_price and r.sl_price > 0 %}Edit SL{% else %}Add SL{% endif %}"
+              data-bs-toggle="modal" data-bs-target="#slModal"
+              data-order-id="{{ r.id }}" data-symbol="{{ r.symbol }}" data-current="{{ r.sl_price|default_if_none:'' }}" data-market="{{ r.market }}">
+        {% if r.sl_price and r.sl_price > 0 %}<i class="bi bi-pencil-square"></i>{% else %}<i class="bi bi-plus-circle"></i>{% endif %}
+      </button>
+      <!-- Close button -->
+      <form method="post" action="{% url 'trading:close_futures_order' %}" style="display:inline" onsubmit="return confirm('Close this position?')">
+        {% csrf_token %}
+        <input type="hidden" name="order_id" value="{{ r.id }}" />
+        <button type="submit" class="btn btn-sm btn-outline-dark" title="Close position">
+          <i class="bi bi-x-circle"></i>
+        </button>
+      </form>
+      <!-- Refresh button -->
+      <form method="post" action="{% url 'trading:refresh_order' %}" style="display:inline" class="refresh-form">
+        {% csrf_token %}
+        <input type="hidden" name="order_id" value="{{ r.id }}" />
+        <input type="hidden" name="market" value="{{ r.market }}" />
+        <button type="submit" class="btn btn-sm btn-outline-success ms-1 refresh-btn" title="Refresh status">
+          <i class="bi bi-arrow-repeat refresh-icon"></i>
+        </button>
+      </form>
+      <!-- Toggle ignore opposite signals -->
+      <form method="post" action="{% url 'trading:toggle_ignore_signal' %}" style="display:inline">
+        {% csrf_token %}
+        <input type="hidden" name="order_id" value="{{ r.id }}" />
+        <input type="hidden" name="market" value="{{ r.market }}" />
+        <button type="submit" class="btn btn-sm {% if r.ignore %}btn-warning{% else %}btn-outline-secondary{% endif %} ms-1" title="{% if r.ignore %}Ignore opposite signals: ON{% else %}Ignore opposite signals: OFF{% endif %}">
+          {% if r.ignore %}<i class="bi bi-slash-circle-fill"></i>{% else %}<i class="bi bi-slash-circle"></i>{% endif %}
+        </button>
+      </form>
+    {% elif r.market == 'Spot' and r.status == 'POSITION' %}
+      <!-- SL button for Spot -->
+      <button class="btn btn-sm btn-outline-danger me-1" title="{% if r.sl_price and r.sl_price > 0 %}Edit SL{% else %}Add SL{% endif %}"
+              data-bs-toggle="modal" data-bs-target="#slModal"
+              data-order-id="{{ r.id }}" data-symbol="{{ r.symbol }}" data-current="{{ r.sl_price|default_if_none:'' }}" data-market="{{ r.market }}">
+        {% if r.sl_price and r.sl_price > 0 %}<i class="bi bi-pencil-square"></i>{% else %}<i class="bi bi-plus-circle"></i>{% endif %}
+      </button>
+      <form method="post" action="{% url 'trading:close_spot_order' %}" style="display:inline" onsubmit="return confirm('Close this position?')">
+        {% csrf_token %}
+        <input type="hidden" name="order_id" value="{{ r.id }}" />
+        <button type="submit" class="btn btn-sm btn-outline-dark" title="Close position">
+          <i class="bi bi-x-circle"></i>
+        </button>
+      </form>
+      <!-- Refresh button for Spot -->
+      <form method="post" action="{% url 'trading:refresh_order' %}" style="display:inline" class="refresh-form">
+        {% csrf_token %}
+        <input type="hidden" name="order_id" value="{{ r.id }}" />
+        <input type="hidden" name="market" value="{{ r.market }}" />
+        <button type="submit" class="btn btn-sm btn-outline-success ms-1 refresh-btn" title="Refresh status">
+          <i class="bi bi-arrow-repeat refresh-icon"></i>
+        </button>
+      </form>
+      <!-- Toggle ignore opposite signals for Spot -->
+      <form method="post" action="{% url 'trading:toggle_ignore_signal' %}" style="display:inline">
+        {% csrf_token %}
+        <input type="hidden" name="order_id" value="{{ r.id }}" />
+        <input type="hidden" name="market" value="{{ r.market }}" />
+        <button type="submit" class="btn btn-sm {% if r.ignore %}btn-warning{% else %}btn-outline-secondary{% endif %} ms-1" title="{% if r.ignore %}Ignore opposite signals: ON{% else %}Ignore opposite signals: OFF{% endif %}">
+          {% if r.ignore %}<i class="bi bi-slash-circle-fill"></i>{% else %}<i class="bi bi-slash-circle"></i>{% endif %}
+        </button>
+      </form>
+    {% else %}-{% endif %}
+  </td>
+</tr>

@@ -50,3 +50,28 @@ class UserKey(models.Model):
 
     class Meta:
         db_table = "user_keys"
+
+
+class IPAddress(models.Model):
+    ip_address = models.GenericIPAddressField(unique=True)
+    http_proxy = models.CharField(
+        max_length=255,
+        blank=True,
+        null=True,
+        help_text="Example: http://user:pass@host:port",
+    )
+    https_proxy = models.CharField(
+        max_length=255,
+        blank=True,
+        null=True,
+        help_text="Example: http://user:pass@host:port",
+    )
+    is_active = models.BooleanField(default=True)
+    last_used = models.DateTimeField(auto_now_add=True)
+    usage_count = models.PositiveIntegerField(default=0)
+
+    class Meta:
+        db_table = "ip_addresses"
+        indexes = [
+            models.Index(fields=["is_active", "usage_count"]),
+        ]

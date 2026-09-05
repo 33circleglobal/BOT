@@ -34,6 +34,9 @@ def trading_view_webhook(request):
         )
     try:
         payload = json.loads(request.body)
+        print("-------webhook---------")
+        print(payload)
+        print("-------webhook---------")
         symbol = payload.get("symbol")
         side = payload.get("side")
         market = payload.get("market", None)
@@ -242,12 +245,12 @@ def update_spot_sl(request):
 
     try:
         user_key = UserKey.objects.get(user=request.user, is_active=True)
-        ex = make_spot_exchange(api_key=user_key.api_key, api_secret=user_key.api_secret)
+        ex = make_spot_exchange(
+            api_key=user_key.api_key, api_secret=user_key.api_secret
+        )
         symbol = order.symbol
 
-        inv_side = (
-            "sell" if order.direction == SpotOrder.TradeDirection.LONG else "buy"
-        )
+        inv_side = "sell" if order.direction == SpotOrder.TradeDirection.LONG else "buy"
         amount = float(order.final_quantity or order.order_quantity)
 
         if sl:
@@ -266,14 +269,10 @@ def update_spot_sl(request):
                 return redirect("accounts:history")
             current = float(get_symbol_last_price(ex, symbol) or 0)
             sl_val = float(sl)
-            if (
-                order.direction == SpotOrder.TradeDirection.LONG and sl_val >= current
-            ):
+            if order.direction == SpotOrder.TradeDirection.LONG and sl_val >= current:
                 messages.error(request, "SL must be below current price for long.")
                 return redirect("accounts:history")
-            if (
-                order.direction == SpotOrder.TradeDirection.SHORT and sl_val <= current
-            ):
+            if order.direction == SpotOrder.TradeDirection.SHORT and sl_val <= current:
                 messages.error(request, "SL must be above current price for short.")
                 return redirect("accounts:history")
 
@@ -532,7 +531,11 @@ def toggle_ignore_signal(request):
             order = SpotOrder.objects.get(id=order_id, user=request.user)
         current = getattr(order, "ignore_opposite_signal", False)
         setattr(order, "ignore_opposite_signal", not current)
-        order.save(update_fields=["ignore_opposite_signal", "updated_at"]) if hasattr(order, "updated_at") else order.save()
+        (
+            order.save(update_fields=["ignore_opposite_signal", "updated_at"])
+            if hasattr(order, "updated_at")
+            else order.save()
+        )
         state = "enabled" if not current else "disabled"
         messages.success(request, f"Ignore opposite signals {state} for this order")
     except (FutureOrder.DoesNotExist, SpotOrder.DoesNotExist):

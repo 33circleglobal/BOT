@@ -62,6 +62,7 @@ def quick_close_position(order: FutureOrder, user: User):
             close_order["id"],
             symbol,
         )
+        print(close_order)
         exit_avg = float(close_order.get("average") or 0)
 
         order.status = FutureOrder.TradeStatus.CLOSED
@@ -73,15 +74,20 @@ def quick_close_position(order: FutureOrder, user: User):
         fee_cost = fee.get("cost", 0)
         order.total_fee = float(order.total_fee or 0) + float(fee_cost)
 
+        entry_price = float(order.entry_price)
         if order.direction == FutureOrder.TradeDirection.LONG:
-            entry_price = float(order.entry_price)
             pnl = float(exit_avg - entry_price) * float(quantity)
-            order.pnl = pnl
         else:
-            entry_price = float(order.entry_price)
             pnl = float(entry_price - exit_avg) * float(quantity)
-            order.pnl = pnl
-        order.pnl_percentage = (float(order.pnl) / float(order.entry_price)) * 100
+        order.pnl = pnl
+
+        # ROE% = PnL / initial margin, where initial margin = notional / leverage
+        # (matches Binance's displayed PnL% for a leveraged futures position).
+        leverage = float(order.leverage or 1)
+        notional = entry_price * float(quantity)
+        margin = notional / leverage if leverage else notional
+        order.pnl_percentage = (float(order.pnl) / margin) * 100 if margin else 0
+
         order.save()
         logger.info(f"Order closed successfully for user {user.username}")
         return True

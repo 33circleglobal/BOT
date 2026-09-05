@@ -8,6 +8,7 @@ from apps.trade.utils.close_order import quick_close_position
 
 from apps.trade.utils.close_market_order_spot import quick_close_spot_position
 from apps.trade.utils.create_market_binance_spot_order import create_binance_spot_order
+from apps.trade.utils.refresh_positions import refresh_futures_order
 
 import logging
 
@@ -136,6 +137,32 @@ def handle_futures_signal(self, side, symbol, user_id, sl=None, tp=None, tps=Non
         create_binance_future_order(side, symbol, user, sl=sl, tp=tp, tps=tps)
     except Exception as e:
         print("Caught exception:", e)
+        raise self.retry(exc=e)
+
+
+# --- Periodic futures position refresh (celery beat, every 5 min) --------------
+@celery_app.task(bind=True)
+def refresh_all_futures_positions(self):
+    """Beat-scheduled controller: fan out one refresh task per open futures position."""
+    try:
+        open_orders = FutureOrder.objects.filter(status=FutureOrder.TradeStatus.POSITION)
+        for order in open_orders:
+            refresh_single_future_position.delay(order.id)
+    except Exception as e:
+        logger.error(f"Error dispatching futures position refresh: {e}")
+
+
+@celery_app.task(
+    bind=True, autoretry_for=(Exception,), retry_backoff=True, max_retries=3
+)
+def refresh_single_future_position(self, order_id):
+    try:
+        order = FutureOrder.objects.get(id=order_id)
+        refresh_futures_order(order)
+    except FutureOrder.DoesNotExist:
+        pass
+    except Exception as e:
+        logger.error(f"Error refreshing futures order {order_id}: {e}")
         raise self.retry(exc=e)
 
 

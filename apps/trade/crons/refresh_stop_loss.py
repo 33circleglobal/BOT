@@ -1,6 +1,7 @@
-from apps.accounts.models import User, UserKey
+from apps.accounts.models import User, UserKey, IPAddress
 from apps.trade.models import FutureOrder, FutureTakeProfit
 from django.utils import timezone
+from django.db import models
 from decimal import Decimal
 
 import ccxt
@@ -11,10 +12,26 @@ logger = logging.getLogger(__name__)
 
 
 def create_connection_with_ccxt(api_key, api_secret):
+    ip_obj = IPAddress.objects.filter(is_active=True).order_by("usage_count").first()
+    proxies = {}
+    if ip_obj:
+        proxies = {
+            "http": ip_obj.http_proxy,
+            "https": ip_obj.http_proxy,
+        }
+        ip_obj.usage_count = models.F("usage_count") + 1
+        ip_obj.last_used = timezone.now()
+        ip_obj.save(update_fields=["usage_count", "last_used"])
     exchange = ccxt.binanceusdm(
         {
             "apiKey": api_key,
             "secret": api_secret,
+            "timeout": 30000,
+            "enableRateLimit": True,
+            "proxies": proxies,
+            "options": {
+                "adjustForTimeDifference": True,
+            },
         }
     )
     exchange.load_markets()
@@ -33,16 +50,25 @@ def refresh_orders():
         )
 
         # Check SL first only if active (POSITION)
-        if order.stop_loss_status == FutureOrder.TradeStatus.POSITION and order.stop_loss_order_id:
+        if (
+            order.stop_loss_status == FutureOrder.TradeStatus.POSITION
+            and order.stop_loss_order_id
+        ):
             try:
-                sl_info = exchange.fetch_order(id=order.stop_loss_order_id, symbol=order.symbol)
+                sl_info = exchange.fetch_order(
+                    id=order.stop_loss_order_id, symbol=order.symbol
+                )
                 if sl_info.get("remaining") == 0 and sl_info.get("status") == "closed":
-                    order.stop_loss_price = sl_info.get("average") or sl_info.get("price")
+                    order.stop_loss_price = sl_info.get("average") or sl_info.get(
+                        "price"
+                    )
                     order.status = FutureOrder.TradeStatus.CLOSED
                     order.stop_loss_status = FutureOrder.TradeStatus.CLOSED
                     fee = sl_info.get("fee") or {}
                     order.stop_loss_fee = float(fee.get("cost", 0))
-                    order.total_fee = float(order.total_fee or 0) + float(fee.get("cost", 0))
+                    order.total_fee = float(order.total_fee or 0) + float(
+                        fee.get("cost", 0)
+                    )
 
                     entry_price = float(order.entry_price)
                     exit_price = float(order.stop_loss_price)
@@ -50,7 +76,9 @@ def refresh_orders():
                         order.pnl = (exit_price - entry_price) * quantity
                     else:
                         order.pnl = (entry_price - exit_price) * quantity
-                    order.pnl_percentage = (float(order.pnl) / float(order.entry_price)) * 100
+                    order.pnl_percentage = (
+                        float(order.pnl) / float(order.entry_price)
+                    ) * 100
                     order.closed_at = timezone.now()
                     order.save()
                     continue
@@ -90,9 +118,16 @@ def refresh_orders():
 
         # If all TP children are closed, close parent order
         if children:
-            closed_qty = sum(float(c.quantity) for c in children if c.status == FutureTakeProfit.TradeStatus.CLOSED)
+            closed_qty = sum(
+                float(c.quantity)
+                for c in children
+                if c.status == FutureTakeProfit.TradeStatus.CLOSED
+            )
             total_qty = float(order.order_quantity)
-            if closed_qty >= total_qty and order.status == FutureOrder.TradeStatus.POSITION:
+            if (
+                closed_qty >= total_qty
+                and order.status == FutureOrder.TradeStatus.POSITION
+            ):
                 order.status = FutureOrder.TradeStatus.CLOSED
                 order.stop_loss_status = FutureOrder.TradeStatus.CANCELLED
                 order.closed_at = timezone.now()
@@ -100,10 +135,18 @@ def refresh_orders():
 
         # Fallback: recompute realized pnl from closed children
         try:
-            closed_children = list(FutureTakeProfit.objects.filter(order=order, status=FutureTakeProfit.TradeStatus.CLOSED))
+            closed_children = list(
+                FutureTakeProfit.objects.filter(
+                    order=order, status=FutureTakeProfit.TradeStatus.CLOSED
+                )
+            )
             if closed_children:
                 entry = Decimal(str(order.entry_price))
-                total_qty = Decimal(str(order.order_quantity)) if order.order_quantity else Decimal("0")
+                total_qty = (
+                    Decimal(str(order.order_quantity))
+                    if order.order_quantity
+                    else Decimal("0")
+                )
                 realized = Decimal("0")
                 for child in closed_children:
                     exit_avg = Decimal(str(child.price))

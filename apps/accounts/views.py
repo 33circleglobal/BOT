@@ -335,6 +335,7 @@ def history_view(request):
                 "tp_closed": o.tps.filter(status="CLOSED").count(),
                 "tps_json": json.dumps(tps_list),
                 "quantity": float(o.order_quantity),
+                "leverage": float(o.leverage or 1),
                 "ignore": bool(getattr(o, "ignore_opposite_signal", False)),
                 "created_at": o.created_at,
                 "closed_at": o.closed_at,
@@ -343,8 +344,24 @@ def history_view(request):
 
     records.sort(key=lambda r: r["created_at"], reverse=True)
 
+    CLOSED_STATUSES = ("CLOSED", "CANCELLED", "FAILED")
+
+    def bucket_records(market_name, limit=500):
+        market_records = [r for r in records if r["market"] == market_name][:limit]
+        return {
+            "open": [r for r in market_records if r["status"] == "OPEN"],
+            "position": [r for r in market_records if r["status"] == "POSITION"],
+            "closed": [r for r in market_records if r["status"] in CLOSED_STATUSES],
+        }
+
+    spot_buckets = bucket_records("Spot")
+    fut_buckets = bucket_records("Futures")
+
     context = {
-        "records": records[:500],
+        "spot_buckets": spot_buckets,
+        "fut_buckets": fut_buckets,
+        "spot_counts": {k: len(v) for k, v in spot_buckets.items()},
+        "fut_counts": {k: len(v) for k, v in fut_buckets.items()},
         "market": market,
         "status": status_val,
         "symbol": symbol,

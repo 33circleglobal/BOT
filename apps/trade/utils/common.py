@@ -1,20 +1,63 @@
 import ccxt
 import logging
 
+from django.db import models
+from apps.accounts.models import IPAddress
+
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 
 def make_spot_exchange(api_key: str, api_secret: str):
     """Create a CCXT Binance spot exchange instance and load markets."""
-    exchange = ccxt.binance({"apiKey": api_key, "secret": api_secret})
+    ip_obj = IPAddress.objects.filter(is_active=True).order_by("usage_count").first()
+    proxies = {}
+    if ip_obj:
+        proxies = {
+            "http": ip_obj.http_proxy,
+            "https": ip_obj.http_proxy,
+        }
+        ip_obj.usage_count = models.F("usage_count") + 1
+        ip_obj.save(update_fields=["usage_count", "last_used"])
+    exchange = ccxt.binance(
+        {
+            "apiKey": api_key,
+            "secret": api_secret,
+            "timeout": 30000,
+            "enableRateLimit": True,
+            "proxies": proxies,
+            "options": {
+                "adjustForTimeDifference": True,
+            },
+        }
+    )
     exchange.load_markets()
     return exchange
 
 
 def make_futures_exchange(api_key: str, api_secret: str):
     """Create a CCXT Binance USDM futures exchange instance and load markets."""
-    exchange = ccxt.binanceusdm({"apiKey": api_key, "secret": api_secret})
+    ip_obj = IPAddress.objects.filter(is_active=True).order_by("usage_count").first()
+    proxies = {}
+    if ip_obj:
+        proxies = {
+            "http": ip_obj.http_proxy,
+            "https": ip_obj.http_proxy,
+        }
+        ip_obj.usage_count = models.F("usage_count") + 1
+        ip_obj.save(update_fields=["usage_count", "last_used"])
+    exchange = ccxt.binanceusdm(
+        {
+            "apiKey": api_key,
+            "secret": api_secret,
+            "timeout": 30000,
+            "enableRateLimit": True,
+            "proxies": proxies,
+            "options": {
+                "adjustForTimeDifference": True,
+            },
+        }
+    )
     exchange.load_markets()
     return exchange
 
