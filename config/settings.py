@@ -37,6 +37,14 @@ CSRF_TRUSTED_ORIGINS = [
     "https://api.caprover-bot.throneex.com",
 ]
 
+# Extra origins (e.g. the Cloudflare Tunnel public hostname) supplied via env,
+# comma-separated: CSRF_TRUSTED_ORIGINS=https://bot.example.com,https://foo.example.com
+_extra_csrf_origins = config("CSRF_TRUSTED_ORIGINS", default="")
+if _extra_csrf_origins:
+    CSRF_TRUSTED_ORIGINS += [
+        origin.strip() for origin in _extra_csrf_origins.split(",") if origin.strip()
+    ]
+
 # Application definition
 
 INSTALLED_APPS = [
@@ -46,7 +54,6 @@ INSTALLED_APPS = [
     "django.contrib.sessions",
     "django.contrib.messages",
     "django.contrib.staticfiles",
-    "django_crontab",
     "django_celery_beat",
     "apps.accounts",
     "apps.trade",
