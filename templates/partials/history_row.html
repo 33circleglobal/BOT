@@ -1,5 +1,5 @@
 <tr>
-  <td class="text-nowrap">{{ r.created_at|date:"Y-m-d H:i" }}</td>
+  <td class="text-nowrap js-local-time" data-utc="{{ r.created_at|date:'c' }}">{{ r.created_at|date:"Y-m-d H:i" }}</td>
   <td class="text-nowrap">
     {% if r.status == 'OPEN' or r.status == 'POSITION' %}
       <span class="badge bg-light text-dark border js-live-duration"

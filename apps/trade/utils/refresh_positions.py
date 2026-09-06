@@ -179,17 +179,27 @@ def refresh_futures_order(order: FutureOrder) -> bool:
             and not str(order.stop_loss_order_id).startswith("DISABLED-")
         )
         if sl_needs_resize and remaining_qty > 0 and (has_live_sl or order.stop_loss_status == FutureOrder.TradeStatus.FAILED):
-            trigger_price = float(order.stop_loss_price)
-            if trigger_price <= 0:
-                # Stored SL price is missing/invalid (e.g. stale data from
-                # before SL was enabled) — fall back to a sane default
-                # rather than sending an unusable near-zero trigger price.
-                trigger_price = compute_default_sl(float(entry), entry_side)
-                logger.warning(
-                    f"[refresh] Order {order.id} had an invalid stop_loss_price "
-                    f"({order.stop_loss_price}); using computed default SL "
-                    f"{trigger_price} instead."
-                )
+            breakeven = float(entry)
+            already_at_breakeven = abs(float(order.stop_loss_price) - breakeven) < 1e-8
+            if closed_children:
+                # At least one TP has filled — protect the remainder at
+                # breakeven instead of the original stop. Re-sent as-is
+                # (no-op price-wise) if it's already sitting there; the SL
+                # still gets cancelled/re-placed here because its quantity
+                # must shrink to match remaining_qty.
+                trigger_price = breakeven
+            else:
+                trigger_price = float(order.stop_loss_price)
+                if trigger_price <= 0:
+                    # Stored SL price is missing/invalid (e.g. stale data from
+                    # before SL was enabled) — fall back to a sane default
+                    # rather than sending an unusable near-zero trigger price.
+                    trigger_price = compute_default_sl(float(entry), entry_side)
+                    logger.warning(
+                        f"[refresh] Order {order.id} had an invalid stop_loss_price "
+                        f"({order.stop_loss_price}); using computed default SL "
+                        f"{trigger_price} instead."
+                    )
             if has_live_sl:
                 cancel_algo_order(ex, order.symbol, order.stop_loss_order_id)
             new_qty = float(ex.amountToPrecision(order.symbol, float(remaining_qty)))
@@ -205,6 +215,12 @@ def refresh_futures_order(order: FutureOrder) -> bool:
                 )
                 order.stop_loss_order_id = new_sl["id"]
                 order.stop_loss_status = FutureOrder.TradeStatus.POSITION
+                order.stop_loss_price = trigger_price
+                if closed_children and not already_at_breakeven:
+                    logger.info(
+                        f"[sl] Moved SL to breakeven ({trigger_price}) for order "
+                        f"{order.id} after a TP fill"
+                    )
             except Exception as e:
                 # Leave the position flagged as unprotected so the next
                 # refresh cycle retries the resize rather than silently

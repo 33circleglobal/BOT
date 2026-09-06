@@ -6,7 +6,8 @@
     <div class="card-body">
       <h5 class="card-title mb-3">Risk Settings</h5>
       <p class="text-muted small">
-        Control how many trades the bot is allowed to hold open at once.
+        Control how many trades the bot is allowed to hold open at once,
+        how much balance it commits per trade, and futures leverage.
         New signals that would exceed these limits are skipped.
       </p>
       <form method="post" class="row g-3">
@@ -33,12 +34,35 @@
             <div class="text-danger small">{{ error }}</div>
           {% endfor %}
         </div>
+        <div class="col-12 col-md-6">
+          <label class="form-label">{{ form.futures_position_pct.label }}</label>
+          {{ form.futures_position_pct }}
+          <div class="form-text">% of available USDT balance (before leverage) used to size each new futures trade.</div>
+          {% for error in form.futures_position_pct.errors %}
+            <div class="text-danger small">{{ error }}</div>
+          {% endfor %}
+        </div>
+        <div class="col-12 col-md-6">
+          <label class="form-label">{{ form.futures_leverage.label }}</label>
+          {{ form.futures_leverage }}
+          {% for error in form.futures_leverage.errors %}
+            <div class="text-danger small">{{ error }}</div>
+          {% endfor %}
+        </div>
 
         <div class="col-12"><h6 class="text-uppercase text-muted small mt-3">Spot</h6></div>
         <div class="col-12 col-md-4">
           <label class="form-label">{{ form.spot_max_positions.label }}</label>
           {{ form.spot_max_positions }}
           {% for error in form.spot_max_positions.errors %}
+            <div class="text-danger small">{{ error }}</div>
+          {% endfor %}
+        </div>
+        <div class="col-12 col-md-4">
+          <label class="form-label">{{ form.spot_position_pct.label }}</label>
+          {{ form.spot_position_pct }}
+          <div class="form-text">% of available balance used to size each new spot trade.</div>
+          {% for error in form.spot_position_pct.errors %}
             <div class="text-danger small">{{ error }}</div>
           {% endfor %}
         </div>

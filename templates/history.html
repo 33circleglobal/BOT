@@ -266,6 +266,32 @@
       if (e.target && e.target.name === 'tp_percents[]') recalcTotalPct();
     });
   }
+  // --- Render "Time" column in the viewer's local timezone ---
+  (function () {
+    function pad(n) {
+      return String(n).padStart(2, "0");
+    }
+    function formatLocal(d) {
+      return (
+        d.getFullYear() +
+        "-" +
+        pad(d.getMonth() + 1) +
+        "-" +
+        pad(d.getDate()) +
+        " " +
+        pad(d.getHours()) +
+        ":" +
+        pad(d.getMinutes())
+      );
+    }
+    document.querySelectorAll(".js-local-time").forEach((el) => {
+      const d = new Date(el.dataset.utc);
+      if (isNaN(d.getTime())) return;
+      el.textContent = formatLocal(d);
+      el.title = d.toString();
+    });
+  })();
+
   // --- Live "time open" duration for OPEN/POSITION rows ---
   (function () {
     function formatDuration(ms) {
