@@ -188,6 +188,9 @@
       <a href="{% url 'accounts:history' %}" class="{% if request.resolver_match.url_name == 'history' %}active{% endif %}">
         <i class="bi bi-clock-history"></i><span>History</span><div class="tooltip-custom">History</div>
       </a>
+      <a href="{% url 'trading:risk_settings' %}" class="{% if request.resolver_match.url_name == 'risk_settings' %}active{% endif %}">
+        <i class="bi bi-sliders"></i><span>Risk Settings</span><div class="tooltip-custom">Risk Settings</div>
+      </a>
       <a href="#" class="{% if request.resolver_match.url_name == 'crypto_news_list' %}active{% endif %}">
         <i class="bi bi-calendar2-week"></i><span>News</span><div class="tooltip-custom">News</div>
       </a>

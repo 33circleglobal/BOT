@@ -1,6 +1,6 @@
 from django.contrib import admin
 
-from .models import SpotOrder, FutureOrder, FutureTakeProfit
+from .models import SpotOrder, FutureOrder, FutureTakeProfit, TradeSettings
 
 # Register your models here.
 
@@ -18,3 +18,15 @@ class FutureOrderAdmin(admin.ModelAdmin):
 @admin.register(FutureTakeProfit)
 class FutureTakeProfitAdmin(admin.ModelAdmin):
     list_display = ["id", "order", "tp_order_id", "price", "percent", "status"]
+
+
+@admin.register(TradeSettings)
+class TradeSettingsAdmin(admin.ModelAdmin):
+    list_display = [
+        "id",
+        "user",
+        "futures_max_positions",
+        "futures_max_long",
+        "futures_max_short",
+        "spot_max_positions",
+    ]

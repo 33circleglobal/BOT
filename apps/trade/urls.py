@@ -8,6 +8,7 @@ from .views import (
     toggle_ignore_signal,
     refresh_order,
     update_futures_multi_tp,
+    risk_settings,
 )
 
 app_name = "trading"
@@ -21,4 +22,5 @@ urlpatterns = [
     path("toggle-ignore/", toggle_ignore_signal, name="toggle_ignore_signal"),
     path("refresh/", refresh_order, name="refresh_order"),
     path("futures/tps/", update_futures_multi_tp, name="update_futures_multi_tp"),
+    path("risk-settings/", risk_settings, name="risk_settings"),
 ]

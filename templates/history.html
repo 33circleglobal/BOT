@@ -266,6 +266,31 @@
       if (e.target && e.target.name === 'tp_percents[]') recalcTotalPct();
     });
   }
+  // --- Live "time open" duration for OPEN/POSITION rows ---
+  (function () {
+    function formatDuration(ms) {
+      if (!isFinite(ms) || ms < 0) ms = 0;
+      const totalMinutes = Math.floor(ms / 60000);
+      const days = Math.floor(totalMinutes / 1440);
+      const hours = Math.floor((totalMinutes % 1440) / 60);
+      const minutes = totalMinutes % 60;
+      const parts = [];
+      if (days) parts.push(days + "d");
+      if (days || hours) parts.push(hours + "h");
+      parts.push(minutes + "m");
+      return parts.join(" ");
+    }
+    function updateDurations() {
+      document.querySelectorAll(".js-live-duration").forEach((el) => {
+        const created = new Date(el.dataset.created);
+        if (isNaN(created.getTime())) return;
+        el.textContent = formatDuration(Date.now() - created.getTime());
+      });
+    }
+    updateDurations();
+    setInterval(updateDurations, 30000);
+  })();
+
   // Simple spinner on refresh submit
   document.querySelectorAll('.refresh-form').forEach(f => {
     f.addEventListener('submit', () => {

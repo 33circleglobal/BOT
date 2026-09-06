@@ -3,6 +3,7 @@
     <thead>
       <tr>
         <th>Time</th>
+        <th>Duration</th>
         <th>Symbol</th>
         <th>Dir</th>
         <th>Status</th>
@@ -19,7 +20,7 @@
       {% for r in rows %}
         {% include "partials/history_row.html" %}
       {% empty %}
-      <tr><td colspan="11" class="text-center text-muted">No records</td></tr>
+      <tr><td colspan="12" class="text-center text-muted">No records</td></tr>
       {% endfor %}
     </tbody>
   </table>

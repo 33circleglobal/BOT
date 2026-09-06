@@ -12,7 +12,8 @@ from apps.trade.task import (
     handle_futures_signal_controller,
 )
 
-from apps.trade.models import FutureOrder, FutureTakeProfit
+from apps.trade.models import FutureOrder, FutureTakeProfit, TradeSettings
+from apps.trade.forms import TradeSettingsForm
 from apps.accounts.models import UserKey
 from apps.trade.utils.common import (
     make_futures_exchange,
@@ -514,6 +515,20 @@ def refresh_order(request):
     except Exception as e:
         messages.error(request, f"Refresh failed: {e}")
     return redirect("accounts:history")
+
+
+@login_required
+def risk_settings(request):
+    settings_obj = TradeSettings.get_for_user(request.user)
+    if request.method == "POST":
+        form = TradeSettingsForm(request.POST, instance=settings_obj)
+        if form.is_valid():
+            form.save()
+            messages.success(request, "Risk settings updated")
+            return redirect("trading:risk_settings")
+    else:
+        form = TradeSettingsForm(instance=settings_obj)
+    return render(request, "risk_settings.html", {"form": form})
 
 
 @login_required

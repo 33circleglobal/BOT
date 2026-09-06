@@ -1,0 +1,53 @@
+{% extends "base.html" %}
+
+{% block content %}
+<div class="container-fluid">
+  <div class="card border-0 shadow-sm">
+    <div class="card-body">
+      <h5 class="card-title mb-3">Risk Settings</h5>
+      <p class="text-muted small">
+        Control how many trades the bot is allowed to hold open at once.
+        New signals that would exceed these limits are skipped.
+      </p>
+      <form method="post" class="row g-3">
+        {% csrf_token %}
+        <div class="col-12"><h6 class="text-uppercase text-muted small mt-2">Futures</h6></div>
+        <div class="col-12 col-md-4">
+          <label class="form-label">{{ form.futures_max_positions.label }}</label>
+          {{ form.futures_max_positions }}
+          {% for error in form.futures_max_positions.errors %}
+            <div class="text-danger small">{{ error }}</div>
+          {% endfor %}
+        </div>
+        <div class="col-12 col-md-4">
+          <label class="form-label">{{ form.futures_max_long.label }}</label>
+          {{ form.futures_max_long }}
+          {% for error in form.futures_max_long.errors %}
+            <div class="text-danger small">{{ error }}</div>
+          {% endfor %}
+        </div>
+        <div class="col-12 col-md-4">
+          <label class="form-label">{{ form.futures_max_short.label }}</label>
+          {{ form.futures_max_short }}
+          {% for error in form.futures_max_short.errors %}
+            <div class="text-danger small">{{ error }}</div>
+          {% endfor %}
+        </div>
+
+        <div class="col-12"><h6 class="text-uppercase text-muted small mt-3">Spot</h6></div>
+        <div class="col-12 col-md-4">
+          <label class="form-label">{{ form.spot_max_positions.label }}</label>
+          {{ form.spot_max_positions }}
+          {% for error in form.spot_max_positions.errors %}
+            <div class="text-danger small">{{ error }}</div>
+          {% endfor %}
+        </div>
+
+        <div class="col-12 mt-4">
+          <button type="submit" class="btn btn-primary">Save Settings</button>
+        </div>
+      </form>
+    </div>
+  </div>
+</div>
+{% endblock %}
