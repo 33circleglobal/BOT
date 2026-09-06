@@ -35,7 +35,7 @@ def create_order_of_user(self, side, symbol, market, user_id, sl=None, tp=None, 
         if market == "futures":
             create_binance_future_order(side, symbol, user, sl=sl, tp=tp, tps=tps)
         else:
-            create_binance_spot_order(side, symbol, user, sl=sl)
+            create_binance_spot_order(side, symbol, user, sl=sl, tp=tp, tps=tps)
     except Exception as e:
         print("Caught exception:", e)
         raise self.retry(exc=e)

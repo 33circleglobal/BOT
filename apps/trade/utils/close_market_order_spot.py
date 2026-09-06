@@ -1,5 +1,5 @@
 from apps.accounts.models import User, UserKey
-from apps.trade.models import SpotOrder
+from apps.trade.models import SpotOrder, SpotTakeProfit
 from apps.trade.utils.common import make_spot_exchange, get_symbol_last_price
 
 import ccxt
@@ -37,20 +37,48 @@ def quick_close_spot_position(order: SpotOrder, user: User):
         except Exception:
             pass
 
+        # Cancel any still-open limit TP orders so their reserved quantity is
+        # freed rather than left resting on the exchange after we mark this
+        # order CLOSED locally.
+        open_tps = SpotTakeProfit.objects.filter(
+            order=order, status=SpotTakeProfit.TradeStatus.POSITION
+        )
+        for tp in open_tps:
+            try:
+                exchange.cancel_order(id=tp.tp_order_id, symbol=symbol)
+            except Exception:
+                pass
+        open_tps.update(status=SpotTakeProfit.TradeStatus.CANCELLED)
+
         # Get current market price for validation
         current_price = get_symbol_last_price(exchange, symbol)
         if not current_price:
             logger.error(f"Could not fetch current price for {symbol}")
             return False
 
+        # Some TPs may already have filled before this close (reducing what's
+        # actually held) — cap by the real free balance rather than assuming
+        # the full original quantity is still there.
+        base_currency = symbol.split("/")[0]
+        try:
+            free_base = float(exchange.fetch_balance()["free"].get(base_currency, 0))
+            if free_base > 0:
+                quantity = min(quantity, free_base)
+        except Exception:
+            pass
+
         # Check minimum order requirements
         market = exchange.market(symbol)
         min_amount = float(market["limits"]["amount"]["min"])
         if quantity < min_amount:
-            logger.error(
-                f"Order quantity {quantity} is below minimum {min_amount} for {symbol}"
+            logger.info(
+                f"Spot order {order.id} has no remaining quantity to close "
+                f"({quantity} < min {min_amount} for {symbol}); likely fully filled via TP."
             )
-            return False
+            order.status = SpotOrder.TradeStatus.CLOSED
+            order.closed_at = timezone.now()
+            order.save()
+            return True
 
         # Execute closing order
         close_order = exchange.create_order(

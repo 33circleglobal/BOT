@@ -1,5 +1,5 @@
 from apps.accounts.models import UserKey
-from apps.trade.models import FutureOrder, SpotOrder, FutureTakeProfit
+from apps.trade.models import FutureOrder, SpotOrder, FutureTakeProfit, SpotTakeProfit
 from apps.trade.utils.common import (
     make_futures_exchange,
     make_spot_exchange,
@@ -255,12 +255,24 @@ def refresh_futures_order(order: FutureOrder) -> bool:
 
 
 def refresh_spot_order(order: SpotOrder) -> bool:
-    """Best-effort: check for opposite-side closed orders after creation and close locally.
-    This is heuristic because we don't persist the stop order id for spot.
-    Spot orders are unaffected by the USDⓈ-M futures algoOrder migration —
-    Binance Spot OCO/STOP_LOSS_LIMIT orders still go through the regular
-    order endpoints, so this function is left as-is.
+    """Sync one open spot position with the exchange.
+
+    - Detects filled TP legs (plain LIMIT sell orders — spot has no algo
+      endpoint like futures) and accumulates realized PnL from each.
+    - Detects all TPs filled (position fully closed): closes the parent
+      order and cancels the SL if one is somehow still live.
+    - Detects an SL fill: cancels any TPs still open and closes the parent
+      order, combining realized TP PnL with the SL leg's PnL.
+    - If neither TPs nor a stored SL id explain the position closing, falls
+      back to a heuristic scan of recent closed orders (legacy behavior for
+      orders created before SL ids were persisted).
+
+    Note: unlike futures, a filled spot TP doesn't trigger any SL move —
+    TP-based spot signals are placed without a stop-loss in the first place
+    (see create_binance_spot_order), so there's nothing to reprice here.
     """
+    if order.status != SpotOrder.TradeStatus.POSITION:
+        return False
     try:
         user_key = UserKey.objects.get(user=order.user, is_active=True)
         ex = make_spot_exchange(
@@ -268,8 +280,77 @@ def refresh_spot_order(order: SpotOrder) -> bool:
         )
         symbol = order.symbol
         side = "sell" if order.direction == SpotOrder.TradeDirection.LONG else "buy"
+        entry = Decimal(str(order.entry_price))
+        total_qty = Decimal(str(order.final_quantity or order.order_quantity))
+        direction = order.direction
 
-        # Prefer precise check using stored SL order id when active
+        # --- 1. Reconcile any newly-filled TP legs ---------------------------
+        children = list(SpotTakeProfit.objects.filter(order=order))
+        newly_filled = False
+        for child in children:
+            if child.status != SpotTakeProfit.TradeStatus.POSITION:
+                continue
+            try:
+                info = ex.fetch_order(id=child.tp_order_id, symbol=symbol)
+            except Exception as e:
+                logger.warning(f"Could not fetch spot TP order {child.tp_order_id}: {e}")
+                continue
+            status = info.get("status")
+            if status == "closed" and float(info.get("filled") or 0) > 0:
+                child.price = float(info.get("average") or info.get("price") or child.price)
+                fee = info.get("fee") or {}
+                if fee:
+                    try:
+                        child.fee = float(fee.get("cost", 0))
+                    except Exception:
+                        pass
+                child.status = SpotTakeProfit.TradeStatus.CLOSED
+                child.save()
+                newly_filled = True
+            elif status in ("canceled", "cancelled", "expired", "rejected"):
+                # Cancelled/expired outside our control (e.g. manually on the
+                # exchange) — stop tracking it as an open leg.
+                child.status = SpotTakeProfit.TradeStatus.CANCELLED
+                child.save()
+
+        closed_children = [
+            c for c in children if c.status == SpotTakeProfit.TradeStatus.CLOSED
+        ]
+        realized_tp_qty = sum((Decimal(str(c.quantity)) for c in closed_children), Decimal("0"))
+        realized_tp_pnl = sum(
+            (
+                _leg_pnl(direction, entry, Decimal(str(c.price)), Decimal(str(c.quantity)))
+                for c in closed_children
+            ),
+            Decimal("0"),
+        )
+        remaining_qty = total_qty - realized_tp_qty
+        if remaining_qty < 0:
+            remaining_qty = Decimal("0")
+        entry_val = entry * total_qty
+
+        # --- 2. All TPs filled: position fully closed without the SL --------
+        if closed_children and remaining_qty <= DUST:
+            if (
+                order.stop_loss_status == SpotOrder.TradeStatus.POSITION
+                and order.stop_loss_order_id
+            ):
+                try:
+                    ex.cancel_order(id=order.stop_loss_order_id, symbol=symbol)
+                except Exception:
+                    pass
+                order.stop_loss_status = SpotOrder.TradeStatus.CANCELLED
+            order.exit_price = closed_children[-1].price
+            order.status = SpotOrder.TradeStatus.CLOSED
+            order.pnl = realized_tp_pnl
+            order.pnl_percentage = (
+                (realized_tp_pnl / entry_val) * Decimal("100") if entry_val else Decimal("0")
+            )
+            order.closed_at = timezone.now()
+            order.save()
+            return True
+
+        # --- 3. SL filled: close remaining qty at SL price, cancel other TPs -
         if (
             order.stop_loss_status == SpotOrder.TradeStatus.POSITION
             and order.stop_loss_order_id
@@ -277,20 +358,30 @@ def refresh_spot_order(order: SpotOrder) -> bool:
             try:
                 sl_info = ex.fetch_order(id=order.stop_loss_order_id, symbol=symbol)
                 if sl_info.get("remaining") == 0 and sl_info.get("status") == "closed":
-                    avg = float(sl_info.get("average") or sl_info.get("price") or 0)
-                    qty = float(order.final_quantity or order.order_quantity)
+                    avg = Decimal(str(sl_info.get("average") or sl_info.get("price") or 0))
+                    sl_qty = remaining_qty if remaining_qty > 0 else total_qty
+
+                    still_open = [
+                        c for c in children if c.status == SpotTakeProfit.TradeStatus.POSITION
+                    ]
+                    for c in still_open:
+                        try:
+                            ex.cancel_order(id=c.tp_order_id, symbol=symbol)
+                        except Exception:
+                            pass
+                        c.status = SpotTakeProfit.TradeStatus.CANCELLED
+                        c.save()
+
+                    sl_leg_pnl = _leg_pnl(direction, entry, avg, sl_qty)
+                    total_pnl = realized_tp_pnl + sl_leg_pnl
+
                     order.exit_price = avg
                     order.status = SpotOrder.TradeStatus.CLOSED
                     order.stop_loss_status = SpotOrder.TradeStatus.CLOSED
                     order.closed_at = timezone.now()
-                    entry_val = float(order.entry_price) * qty
-                    exit_val = avg * qty
-                    if order.direction == SpotOrder.TradeDirection.LONG:
-                        order.pnl = exit_val - entry_val
-                    else:
-                        order.pnl = entry_val - exit_val
+                    order.pnl = total_pnl
                     order.pnl_percentage = (
-                        (float(order.pnl) / entry_val) * 100 if entry_val else 0
+                        (total_pnl / entry_val) * Decimal("100") if entry_val else Decimal("0")
                     )
                     fee = sl_info.get("fee") or {}
                     if fee:
@@ -309,7 +400,26 @@ def refresh_spot_order(order: SpotOrder) -> bool:
             except Exception:
                 pass
 
-        # Fallback heuristic scan if no SL id present
+        # --- 4. Partial TP fill, position still open: record realized PnL ---
+        # Unlike futures there's no protective stop to resize/move here — a
+        # TP-based spot signal is placed without an SL in the first place.
+        if newly_filled:
+            order.pnl = realized_tp_pnl
+            order.pnl_percentage = (
+                (realized_tp_pnl / entry_val) * Decimal("100") if entry_val else Decimal("0")
+            )
+            order.save()
+            return True
+
+        # Fallback heuristic scan — legacy orders only. This scans for *any*
+        # closed sell order on the symbol, which would false-positive on a
+        # TP leg that already got reconciled (and correctly accounted for)
+        # in an earlier cycle above, forcing a premature full close and
+        # orphaning any other still-open TP orders. Only orders with no
+        # tracked TP legs at all (predating multi-TP spot support) should
+        # ever reach this path.
+        if children:
+            return False
         try:
             since = int(order.created_at.timestamp() * 1000)
             closed = ex.fetch_closed_orders(symbol, since)

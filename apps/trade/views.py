@@ -55,7 +55,7 @@ def trading_view_webhook(request):
             handle_futures_signal_controller.delay(side, symbol, sl, tp, tps)
         else:
             if side == "buy":
-                create_order_of_user_controller.delay(side, symbol, market, sl, tp)
+                create_order_of_user_controller.delay(side, symbol, market, sl, tp, tps)
             else:
                 close_order_of_user_controller.delay(side, symbol, market)
         return JsonResponse({"status": "success", "message": "Webhook received"})

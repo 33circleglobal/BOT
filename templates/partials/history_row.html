@@ -29,10 +29,8 @@
       {% endif %}>{{ r.pnl|floatformat:2 }}</td>
   <td id="live-pnl-pct-{{ r.market }}-{{ r.id }}" class="{% if r.pnl_pct >= 0 %}text-success{% else %}text-danger{% endif %}">{{ r.pnl_pct|floatformat:2 }}%</td>
   <td>
-    {% if r.market == 'Futures' %}
-      {% if r.tp_count and r.tp_count > 0 %}
-        <span class="text-nowrap">{{ r.tp_closed }}/{{ r.tp_count }} TPs</span>
-      {% else %}-{% endif %}
+    {% if r.tp_count and r.tp_count > 0 %}
+      <span class="text-nowrap">{{ r.tp_closed }}/{{ r.tp_count }} TPs</span>
     {% else %}
       -
     {% endif %}

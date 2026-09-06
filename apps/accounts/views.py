@@ -304,6 +304,8 @@ def history_view(request):
                 "entry_price": float(o.entry_price),
                 "sl_price": float(o.stop_loss_price or 0),
                 "sl_status": o.stop_loss_status,
+                "tp_count": o.tps.count(),
+                "tp_closed": o.tps.filter(status="CLOSED").count(),
                 "quantity": float(o.final_quantity or o.order_quantity),
                 "ignore": bool(getattr(o, "ignore_opposite_signal", False)),
                 "created_at": o.created_at,

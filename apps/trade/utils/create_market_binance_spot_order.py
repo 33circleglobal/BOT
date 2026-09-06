@@ -1,5 +1,5 @@
 from apps.accounts.models import User, UserKey
-from apps.trade.models import SpotOrder, TradeSettings
+from apps.trade.models import SpotOrder, SpotTakeProfit, TradeSettings
 from apps.trade.utils.common import (
     make_spot_exchange,
     get_symbol_last_price,
@@ -22,6 +22,8 @@ def create_binance_spot_order(
     user: User,
     *,
     sl: float | None = None,
+    tp: float | None = None,
+    tps: list | None = None,
     position_pct: float | None = None,
 ):
     try:
@@ -123,8 +125,95 @@ def create_binance_spot_order(
                 user=user,
             )
 
+            # Signals carrying tp/tps are limit-TP-only: place resting LIMIT
+            # sell orders at each target and skip stop-loss entirely (no sl
+            # field is sent for these, and we don't synthesize a default).
+            # Legacy signals with neither tp nor tps keep the original
+            # single protective stop-loss behavior below.
+            if side == "buy" and (tps or tp is not None):
+                cur = float(current_price_of_symbol)
+                base_qty = float(created.final_quantity or quantity)
+                min_amount = float(market["limits"]["amount"]["min"])
+                min_cost = float(market["limits"]["cost"]["min"])
+                tp_defs = list(tps) if tps else [{"price": tp, "percent": 100.0}]
+
+                created_tps = []
+                for idx, tp_def in enumerate(tp_defs):
+                    try:
+                        p = float(tp_def.get("price"))
+                        pct = float(tp_def.get("percent"))
+                    except Exception as e:
+                        logger.error(
+                            f"[tp] Spot TP #{idx} for {symbol} has invalid price/percent: {tp_def} ({e})"
+                        )
+                        continue
+                    if pct <= 0:
+                        logger.warning(
+                            f"[tp] Spot TP #{idx} for {symbol} skipped: percent<=0 ({pct})"
+                        )
+                        continue
+                    if p <= cur:
+                        logger.error(
+                            f"[tp] Spot TP #{idx} for {symbol} invalid: price {p} <= current {cur}"
+                        )
+                        raise ValueError("TP must be above current price for a spot long")
+                    part_qty = base_qty * (pct / 100.0)
+                    qty_p = float(exchange.amountToPrecision(symbol, part_qty))
+                    price_p = float(exchange.priceToPrecision(symbol, p))
+                    if qty_p <= 0:
+                        logger.warning(
+                            f"[tp] Spot TP #{idx} for {symbol} skipped: rounded qty is 0"
+                        )
+                        continue
+                    if min_amount and qty_p < min_amount:
+                        logger.warning(
+                            f"[tp] Spot TP #{idx} for {symbol} skipped: qty {qty_p} "
+                            f"below exchange min_amount {min_amount}"
+                        )
+                        continue
+                    if min_cost and (qty_p * price_p) < min_cost:
+                        logger.warning(
+                            f"[tp] Spot TP #{idx} for {symbol} skipped: notional "
+                            f"{qty_p * price_p} below exchange min_cost {min_cost}"
+                        )
+                        continue
+                    try:
+                        tp_o = exchange.create_order(
+                            symbol=symbol,
+                            side="sell",
+                            type="limit",
+                            amount=qty_p,
+                            price=price_p,
+                        )
+                        SpotTakeProfit.objects.create(
+                            order=created,
+                            tp_order_id=tp_o.get("id", ""),
+                            price=price_p,
+                            percent=pct,
+                            quantity=qty_p,
+                            status=SpotTakeProfit.TradeStatus.POSITION,
+                        )
+                        created_tps.append(tp_o)
+                    except Exception as e:
+                        logger.error(
+                            f"[tp] Spot TP #{idx} for {symbol} FAILED to place "
+                            f"(price={price_p}, qty={qty_p}): {e}",
+                            exc_info=True,
+                        )
+                        continue
+
+                if not created_tps:
+                    logger.warning(
+                        f"[tp] No spot TP orders were created for {symbol}, user={user.username}."
+                    )
+
+                try:
+                    created.stop_loss_status = SpotOrder.TradeStatus.CANCELLED
+                    created.save(update_fields=["stop_loss_status"])
+                except Exception:
+                    pass
             # Attempt to place a protective stop-loss order for spot, unless disabled
-            if not settings.DISABLE_SPOT_STOP_LOSS:
+            elif not settings.DISABLE_SPOT_STOP_LOSS:
                 try:
                     if side == "buy":
                         sl_side = "sell"
