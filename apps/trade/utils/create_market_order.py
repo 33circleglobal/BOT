@@ -342,12 +342,12 @@ def create_binance_future_order(
 
         # Capture SL info when enabled; otherwise mark as cancelled with a unique placeholder id
         if sl_order:
-            stop_loss_price = (
-                sl_order.get("price")
-                or sl_order.get("stopPrice")
-                or sl_order.get("triggerPrice")
-                or sl_trigger
-            )
+            # Use sl_trigger (the price we actually sent to Binance) rather
+            # than parsing it back out of the algoOrder ack: Binance echoes
+            # a "price": "0" placeholder for these market-triggered stops,
+            # and that truthy non-empty string was winning the `or` chain
+            # here, silently persisting stop_loss_price=0.
+            stop_loss_price = sl_trigger
             sl_id = sl_order["id"]
             sl_status = FutureOrder.TradeStatus.POSITION
         else:

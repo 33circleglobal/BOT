@@ -1,6 +1,11 @@
 from apps.accounts.models import UserKey
 from apps.trade.models import FutureOrder, SpotOrder, FutureTakeProfit
-from apps.trade.utils.common import make_futures_exchange, make_spot_exchange, opposite_side
+from apps.trade.utils.common import (
+    make_futures_exchange,
+    make_spot_exchange,
+    opposite_side,
+    compute_default_sl,
+)
 from apps.trade.utils.close_order import cancel_algo_order
 from apps.trade.utils.create_market_order import create_algo_order
 
@@ -175,6 +180,16 @@ def refresh_futures_order(order: FutureOrder) -> bool:
         )
         if sl_needs_resize and remaining_qty > 0 and (has_live_sl or order.stop_loss_status == FutureOrder.TradeStatus.FAILED):
             trigger_price = float(order.stop_loss_price)
+            if trigger_price <= 0:
+                # Stored SL price is missing/invalid (e.g. stale data from
+                # before SL was enabled) — fall back to a sane default
+                # rather than sending an unusable near-zero trigger price.
+                trigger_price = compute_default_sl(float(entry), entry_side)
+                logger.warning(
+                    f"[refresh] Order {order.id} had an invalid stop_loss_price "
+                    f"({order.stop_loss_price}); using computed default SL "
+                    f"{trigger_price} instead."
+                )
             if has_live_sl:
                 cancel_algo_order(ex, order.symbol, order.stop_loss_order_id)
             new_qty = float(ex.amountToPrecision(order.symbol, float(remaining_qty)))
