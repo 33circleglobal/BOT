@@ -13,6 +13,7 @@
         <th>PnL %</th>
         <th>TP</th>
         <th>SL</th>
+        <th>DCA</th>
         <th>Actions</th>
       </tr>
     </thead>
@@ -20,7 +21,7 @@
       {% for r in rows %}
         {% include "partials/history_row.html" %}
       {% empty %}
-      <tr><td colspan="12" class="text-center text-muted">No records</td></tr>
+      <tr><td colspan="13" class="text-center text-muted">No records</td></tr>
       {% endfor %}
     </tbody>
   </table>

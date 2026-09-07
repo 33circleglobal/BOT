@@ -24,6 +24,7 @@ def create_binance_spot_order(
     sl: float | None = None,
     tp: float | None = None,
     tps: list | None = None,
+    dca: float | None = None,
     position_pct: float | None = None,
 ):
     try:
@@ -125,16 +126,17 @@ def create_binance_spot_order(
                 user=user,
             )
 
+            cur = float(current_price_of_symbol)
+            min_amount = float(market["limits"]["amount"]["min"])
+            min_cost = float(market["limits"]["cost"]["min"])
+
             # Signals carrying tp/tps are limit-TP-only: place resting LIMIT
             # sell orders at each target and skip stop-loss entirely (no sl
             # field is sent for these, and we don't synthesize a default).
             # Legacy signals with neither tp nor tps keep the original
             # single protective stop-loss behavior below.
             if side == "buy" and (tps or tp is not None):
-                cur = float(current_price_of_symbol)
                 base_qty = float(created.final_quantity or quantity)
-                min_amount = float(market["limits"]["amount"]["min"])
-                min_cost = float(market["limits"]["cost"]["min"])
                 tp_defs = list(tps) if tps else [{"price": tp, "percent": 100.0}]
 
                 created_tps = []
@@ -256,6 +258,56 @@ def create_binance_spot_order(
                     created.save(update_fields=["stop_loss_status"])
                 except Exception:
                     pass
+
+            # Optional DCA (average-down): a resting LIMIT buy below entry,
+            # same quantity as the initial fill. When it fills, refresh_spot_order
+            # recalculates order_quantity/entry_price and resizes open TPs.
+            if side == "buy" and dca is not None:
+                try:
+                    dca_price_val = float(dca)
+                    if dca_price_val >= cur:
+                        logger.error(
+                            f"[dca] Invalid DCA price for {symbol}: dca={dca_price_val}, "
+                            f"current={cur} (must be below current price for a spot long)"
+                        )
+                    else:
+                        dca_qty_p = float(exchange.amountToPrecision(symbol, quantity))
+                        dca_price_p = float(exchange.priceToPrecision(symbol, dca_price_val))
+                        if min_amount and dca_qty_p < min_amount:
+                            logger.warning(
+                                f"[dca] DCA order for {symbol} skipped: qty {dca_qty_p} "
+                                f"below exchange min_amount {min_amount}"
+                            )
+                        elif min_cost and (dca_qty_p * dca_price_p) < min_cost:
+                            logger.warning(
+                                f"[dca] DCA order for {symbol} skipped: notional "
+                                f"{dca_qty_p * dca_price_p} below exchange min_cost {min_cost}"
+                            )
+                        else:
+                            dca_o = exchange.create_order(
+                                symbol=symbol,
+                                side="buy",
+                                type="limit",
+                                amount=dca_qty_p,
+                                price=dca_price_p,
+                            )
+                            created.dca_order_id = dca_o.get("id", "")
+                            created.dca_price = dca_price_p
+                            created.dca_quantity = dca_qty_p
+                            created.dca_status = SpotOrder.TradeStatus.POSITION
+                            created.save(
+                                update_fields=[
+                                    "dca_order_id",
+                                    "dca_price",
+                                    "dca_quantity",
+                                    "dca_status",
+                                ]
+                            )
+                except Exception as e:
+                    logger.error(
+                        f"[dca] Failed to place DCA order for {symbol}: {e}",
+                        exc_info=True,
+                    )
 
             logger.info(
                 f"Spot {side} order created for {user.username}: "

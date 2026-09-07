@@ -61,6 +61,19 @@ class SpotOrder(models.Model):
         max_length=20, choices=TradeStatus.choices, default=TradeStatus.POSITION
     )
 
+    # DCA (average-down) leg — one optional resting LIMIT buy below entry,
+    # placed with the same quantity as the initial fill. When it fills,
+    # order_quantity/final_quantity/entry_price are recalculated and open
+    # TP legs are resized to match (see refresh_spot_order). Cancelled the
+    # moment any TP fills, since we no longer want to average down once
+    # taking profit.
+    dca_price = models.DecimalField(max_digits=20, decimal_places=10, default=0)
+    dca_order_id = models.CharField(max_length=100, default="", blank=True)
+    dca_quantity = models.DecimalField(max_digits=20, decimal_places=10, default=0)
+    dca_status = models.CharField(
+        max_length=20, choices=TradeStatus.choices, default=TradeStatus.CANCELLED
+    )
+
     # If true, ignore opposite webhook signals; user will close manually
     ignore_opposite_signal = models.BooleanField(default=False)
 

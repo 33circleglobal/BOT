@@ -306,6 +306,8 @@ def history_view(request):
                 "sl_status": o.stop_loss_status,
                 "tp_count": o.tps.count(),
                 "tp_closed": o.tps.filter(status="CLOSED").count(),
+                "dca_price": float(o.dca_price or 0),
+                "dca_status": o.dca_status,
                 "quantity": float(o.final_quantity or o.order_quantity),
                 "ignore": bool(getattr(o, "ignore_opposite_signal", False)),
                 "created_at": o.created_at,

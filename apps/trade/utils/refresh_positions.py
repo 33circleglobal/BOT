@@ -266,6 +266,12 @@ def refresh_spot_order(order: SpotOrder) -> bool:
     - If neither TPs nor a stored SL id explain the position closing, falls
       back to a heuristic scan of recent closed orders (legacy behavior for
       orders created before SL ids were persisted).
+    - Detects a filled DCA (average-down) leg: recalculates order_quantity/
+      entry_price as the weighted average of the original fill and the DCA
+      fill, then resizes every still-open TP to the new total quantity
+      (each leg's percent share is preserved). The DCA order is cancelled
+      the moment any TP fills, since averaging down stops making sense once
+      the position is taking profit.
 
     Note: unlike futures, a filled spot TP doesn't trigger any SL move —
     TP-based spot signals are placed without a stop-loss in the first place
@@ -280,6 +286,80 @@ def refresh_spot_order(order: SpotOrder) -> bool:
         )
         symbol = order.symbol
         side = "sell" if order.direction == SpotOrder.TradeDirection.LONG else "buy"
+
+        # --- 0. DCA (average-down) fill check ---------------------------------
+        if order.dca_status == SpotOrder.TradeStatus.POSITION and order.dca_order_id:
+            try:
+                dca_info = ex.fetch_order(id=order.dca_order_id, symbol=symbol)
+            except Exception as e:
+                logger.warning(f"Could not fetch spot DCA order {order.dca_order_id}: {e}")
+                dca_info = None
+            if dca_info and dca_info.get("status") == "closed" and float(dca_info.get("filled") or 0) > 0:
+                old_qty = Decimal(str(order.order_quantity or 0))
+                old_final = Decimal(str(order.final_quantity or order.order_quantity or 0))
+                old_price = Decimal(str(order.entry_price))
+                dca_qty = Decimal(str(order.dca_quantity or 0))
+                dca_fill_price = Decimal(
+                    str(dca_info.get("average") or dca_info.get("price") or order.dca_price)
+                )
+                fee = dca_info.get("fee") or {}
+                dca_fee_cost = Decimal(str(fee.get("cost", 0))) if fee else Decimal("0")
+
+                new_qty = old_qty + dca_qty
+                new_avg = (
+                    ((old_qty * old_price) + (dca_qty * dca_fill_price)) / new_qty
+                    if new_qty
+                    else old_price
+                )
+                new_final = old_final + dca_qty - dca_fee_cost
+
+                order.order_quantity = new_qty
+                order.entry_price = new_avg
+                order.final_quantity = new_final
+                order.dca_status = SpotOrder.TradeStatus.CLOSED
+                if dca_fee_cost:
+                    order.total_fee = float(order.total_fee or 0) + float(dca_fee_cost)
+
+                # Resize every still-open TP leg to the new total quantity,
+                # preserving each leg's original percent share. Binance
+                # doesn't support amending a resting order's quantity, so
+                # this is a cancel + re-place at the same price.
+                for child in SpotTakeProfit.objects.filter(
+                    order=order, status=SpotTakeProfit.TradeStatus.POSITION
+                ):
+                    try:
+                        ex.cancel_order(id=child.tp_order_id, symbol=symbol)
+                    except Exception:
+                        pass
+                    new_leg_qty = float(new_final) * (float(child.percent) / 100.0)
+                    new_leg_qty_p = float(ex.amountToPrecision(symbol, new_leg_qty))
+                    try:
+                        tp_o = ex.create_order(
+                            symbol=symbol,
+                            side="sell",
+                            type="limit",
+                            amount=new_leg_qty_p,
+                            price=float(child.price),
+                        )
+                        child.tp_order_id = tp_o.get("id", "")
+                        child.quantity = new_leg_qty_p
+                        child.save()
+                    except Exception as e:
+                        logger.error(
+                            f"[dca] Failed to resize spot TP {child.id} after DCA fill "
+                            f"for {symbol}: {e}",
+                            exc_info=True,
+                        )
+                        child.status = SpotTakeProfit.TradeStatus.FAILED
+                        child.save()
+
+                order.save()
+                logger.info(
+                    f"[dca] Spot order {order.id} averaged down: qty {old_qty}->{new_qty}, "
+                    f"entry {old_price}->{new_avg}"
+                )
+                return True
+
         entry = Decimal(str(order.entry_price))
         total_qty = Decimal(str(order.final_quantity or order.order_quantity))
         direction = order.direction
@@ -312,6 +392,20 @@ def refresh_spot_order(order: SpotOrder) -> bool:
                 # exchange) — stop tracking it as an open leg.
                 child.status = SpotTakeProfit.TradeStatus.CANCELLED
                 child.save()
+
+        # A TP just filled — stop averaging down. This doesn't `return True`
+        # itself; whichever section below ends up saving `order` (2/3/4)
+        # persists this change too.
+        if (
+            newly_filled
+            and order.dca_status == SpotOrder.TradeStatus.POSITION
+            and order.dca_order_id
+        ):
+            try:
+                ex.cancel_order(id=order.dca_order_id, symbol=symbol)
+            except Exception:
+                pass
+            order.dca_status = SpotOrder.TradeStatus.CANCELLED
 
         closed_children = [
             c for c in children if c.status == SpotTakeProfit.TradeStatus.CLOSED

@@ -54,6 +54,22 @@
     {% endif %}
   </td>
   <td>
+    {% if r.dca_price and r.dca_price > 0 %}
+      {{ r.dca_price|floatformat:4 }}
+      {% if r.dca_status == 'POSITION' %}
+        <span class="badge bg-info text-dark ms-1">Open</span>
+      {% elif r.dca_status == 'CLOSED' %}
+        <span class="badge bg-success ms-1">Filled</span>
+      {% elif r.dca_status == 'CANCELLED' %}
+        <span class="badge bg-secondary ms-1">Cancelled</span>
+      {% elif r.dca_status == 'FAILED' %}
+        <span class="badge bg-danger ms-1">Failed</span>
+      {% endif %}
+    {% else %}
+      -
+    {% endif %}
+  </td>
+  <td>
     {% if r.market == 'Futures' and r.status == 'POSITION' %}
       <!-- Manage TPs button -->
       <button class="btn btn-sm btn-outline-secondary me-1" title="Manage TPs"

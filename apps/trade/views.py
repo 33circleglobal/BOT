@@ -44,6 +44,7 @@ def trading_view_webhook(request):
         tp = payload.get("tp")
         tps = payload.get("tps")  # optional list of {price, percent}
         sl = payload.get("sl")
+        dca = payload.get("dca")  # optional spot-only average-down price
 
         if not symbol or side not in ("buy", "sell"):
             return JsonResponse(
@@ -55,7 +56,7 @@ def trading_view_webhook(request):
             handle_futures_signal_controller.delay(side, symbol, sl, tp, tps)
         else:
             if side == "buy":
-                create_order_of_user_controller.delay(side, symbol, market, sl, tp, tps)
+                create_order_of_user_controller.delay(side, symbol, market, sl, tp, tps, dca)
             else:
                 close_order_of_user_controller.delay(side, symbol, market)
         return JsonResponse({"status": "success", "message": "Webhook received"})

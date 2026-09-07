@@ -16,12 +16,12 @@ logger = logging.getLogger(__name__)
 
 
 @celery_app.task(bind=True)
-def create_order_of_user_controller(self, side, symbol, market, sl=None, tp=None, tps=None):
+def create_order_of_user_controller(self, side, symbol, market, sl=None, tp=None, tps=None, dca=None):
     try:
         users_key = UserKey.objects.filter(is_active=True)
 
         for user_key in users_key:
-            create_order_of_user.delay(side, symbol, market, user_key.user.id, sl, tp, tps)
+            create_order_of_user.delay(side, symbol, market, user_key.user.id, sl, tp, tps, dca)
     except Exception as e:
         print(f"Error dispatching  order create: {str(e)}")
 
@@ -29,13 +29,13 @@ def create_order_of_user_controller(self, side, symbol, market, sl=None, tp=None
 @celery_app.task(
     bind=True, autoretry_for=(Exception,), retry_backoff=True, max_retries=3
 )
-def create_order_of_user(self, side, symbol, market, user_id, sl=None, tp=None, tps=None):
+def create_order_of_user(self, side, symbol, market, user_id, sl=None, tp=None, tps=None, dca=None):
     try:
         user = User.objects.get(id=user_id)
         if market == "futures":
             create_binance_future_order(side, symbol, user, sl=sl, tp=tp, tps=tps)
         else:
-            create_binance_spot_order(side, symbol, user, sl=sl, tp=tp, tps=tps)
+            create_binance_spot_order(side, symbol, user, sl=sl, tp=tp, tps=tps, dca=dca)
     except Exception as e:
         print("Caught exception:", e)
         raise self.retry(exc=e)
