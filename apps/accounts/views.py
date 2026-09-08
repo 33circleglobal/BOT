@@ -3,11 +3,91 @@ from django.contrib.auth import login, logout, authenticate
 from django.contrib import messages
 from .forms import RegistrationForm, LoginForm
 from django.contrib.auth.decorators import login_required
-from django.db.models import Sum, Count, Q, F, DecimalField, ExpressionWrapper
+from django.db.models import (
+    Sum,
+    Count,
+    Q,
+    F,
+    Avg,
+    Max,
+    Min,
+    DecimalField,
+    DurationField,
+    ExpressionWrapper,
+)
 from django.utils import timezone
 from datetime import timedelta, datetime
 from apps.trade.models import SpotOrder, FutureOrder
 import json
+
+
+def _format_duration(td):
+    if not td:
+        return "-"
+    total_minutes = int(td.total_seconds() // 60)
+    days, rem = divmod(total_minutes, 1440)
+    hours, minutes = divmod(rem, 60)
+    parts = []
+    if days:
+        parts.append(f"{days}d")
+    if days or hours:
+        parts.append(f"{hours}h")
+    parts.append(f"{minutes}m")
+    return " ".join(parts)
+
+
+def _market_stats(closed_qs, all_qs):
+    """Trading performance stats for one market (spot or futures)."""
+    total_closed = closed_qs.count()
+    wins = closed_qs.filter(pnl__gt=0).count()
+    losses = closed_qs.filter(pnl__lt=0).count()
+    breakeven = total_closed - wins - losses
+    win_rate = round((wins / total_closed) * 100, 2) if total_closed else 0
+
+    gross_profit = float(
+        closed_qs.filter(pnl__gt=0).aggregate(s=Sum("pnl"))["s"] or 0
+    )
+    gross_loss_raw = float(
+        closed_qs.filter(pnl__lt=0).aggregate(s=Sum("pnl"))["s"] or 0
+    )  # negative or 0
+    gross_loss = abs(gross_loss_raw)
+
+    avg_win_pct = closed_qs.filter(pnl__gt=0).aggregate(a=Avg("pnl_percentage"))["a"]
+    avg_loss_pct = closed_qs.filter(pnl__lt=0).aggregate(a=Avg("pnl_percentage"))["a"]
+    best_trade = closed_qs.aggregate(m=Max("pnl"))["m"]
+    worst_trade = closed_qs.aggregate(m=Min("pnl"))["m"]
+    avg_pnl = closed_qs.aggregate(a=Avg("pnl"))["a"]
+
+    if gross_loss:
+        profit_factor = f"{round(gross_profit / gross_loss, 2)}"
+    else:
+        profit_factor = "∞" if gross_profit > 0 else "-"
+
+    total_fees = float(all_qs.aggregate(s=Sum("total_fee"))["s"] or 0)
+
+    duration_expr = ExpressionWrapper(
+        F("closed_at") - F("created_at"), output_field=DurationField()
+    )
+    avg_duration = closed_qs.annotate(_dur=duration_expr).aggregate(a=Avg("_dur"))["a"]
+
+    return {
+        "total_trades": all_qs.count(),
+        "closed_trades": total_closed,
+        "wins": wins,
+        "losses": losses,
+        "breakeven": breakeven,
+        "win_rate": win_rate,
+        "gross_profit": round(gross_profit, 2),
+        "gross_loss": round(gross_loss, 2),
+        "avg_win_pct": round(avg_win_pct, 2) if avg_win_pct is not None else 0,
+        "avg_loss_pct": round(abs(avg_loss_pct), 2) if avg_loss_pct is not None else 0,
+        "profit_factor": profit_factor,
+        "best_trade": round(float(best_trade), 2) if best_trade is not None else 0,
+        "worst_trade": round(float(worst_trade), 2) if worst_trade is not None else 0,
+        "avg_pnl": round(float(avg_pnl), 2) if avg_pnl is not None else 0,
+        "total_fees": round(total_fees, 2),
+        "avg_duration": _format_duration(avg_duration),
+    }
 
 
 @login_required
@@ -102,6 +182,9 @@ def home(request):
         .order_by("-ct")[:8]
     )
 
+    spot_stats = _market_stats(spot_closed, SpotOrder.objects.filter(user=user))
+    fut_stats = _market_stats(fut_closed, FutureOrder.objects.filter(user=user))
+
     context = {
         "spot_pnl": float(spot_pnl),
         "fut_pnl": float(fut_pnl),
@@ -116,6 +199,8 @@ def home(request):
         "fut_series_json": json.dumps(fut_series),
         "spot_by_symbol": list(spot_by_symbol),
         "fut_by_symbol": list(fut_by_symbol),
+        "spot_stats": spot_stats,
+        "fut_stats": fut_stats,
     }
     return render(request, "dashboard.html", context)
 

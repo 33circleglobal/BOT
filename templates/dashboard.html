@@ -105,6 +105,19 @@
       </div>
     </div>
   </div>
+
+  <div class="row g-3 mt-1">
+    <div class="col-12 col-lg-6">
+      {% with stats=spot_stats title="Spot Performance" %}
+        {% include "partials/dashboard_stats_table.html" %}
+      {% endwith %}
+    </div>
+    <div class="col-12 col-lg-6">
+      {% with stats=fut_stats title="Futures Performance" %}
+        {% include "partials/dashboard_stats_table.html" %}
+      {% endwith %}
+    </div>
+  </div>
 </div>
 
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>

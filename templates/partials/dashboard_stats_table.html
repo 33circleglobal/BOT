@@ -1,0 +1,59 @@
+<div class="card shadow-sm border-0 h-100">
+  <div class="card-header bg-white border-0 fw-semibold">{{ title }}</div>
+  <div class="card-body py-2">
+    <div class="table-responsive">
+      <table class="table table-sm mb-0">
+        <tbody>
+          <tr>
+            <td class="text-muted">Total Trades</td>
+            <td class="text-end fw-semibold">{{ stats.total_trades }}</td>
+            <td class="text-muted">Closed Trades</td>
+            <td class="text-end fw-semibold">{{ stats.closed_trades }}</td>
+          </tr>
+          <tr>
+            <td class="text-muted">Winning Trades</td>
+            <td class="text-end fw-semibold text-success">{{ stats.wins }}</td>
+            <td class="text-muted">Losing Trades</td>
+            <td class="text-end fw-semibold text-danger">{{ stats.losses }}</td>
+          </tr>
+          <tr>
+            <td class="text-muted">Breakeven Trades</td>
+            <td class="text-end fw-semibold">{{ stats.breakeven }}</td>
+            <td class="text-muted">Win Rate</td>
+            <td class="text-end fw-semibold">{{ stats.win_rate }}%</td>
+          </tr>
+          <tr>
+            <td class="text-muted">Avg Win %</td>
+            <td class="text-end fw-semibold text-success">+{{ stats.avg_win_pct }}%</td>
+            <td class="text-muted">Avg Loss %</td>
+            <td class="text-end fw-semibold text-danger">-{{ stats.avg_loss_pct }}%</td>
+          </tr>
+          <tr>
+            <td class="text-muted">Gross Profit</td>
+            <td class="text-end fw-semibold text-success">{{ stats.gross_profit }} USDT</td>
+            <td class="text-muted">Gross Loss</td>
+            <td class="text-end fw-semibold text-danger">{{ stats.gross_loss }} USDT</td>
+          </tr>
+          <tr>
+            <td class="text-muted">Profit Factor</td>
+            <td class="text-end fw-semibold">{{ stats.profit_factor }}</td>
+            <td class="text-muted">Avg PnL / Trade</td>
+            <td class="text-end fw-semibold {% if stats.avg_pnl >= 0 %}text-success{% else %}text-danger{% endif %}">{{ stats.avg_pnl }} USDT</td>
+          </tr>
+          <tr>
+            <td class="text-muted">Best Trade</td>
+            <td class="text-end fw-semibold text-success">{{ stats.best_trade }} USDT</td>
+            <td class="text-muted">Worst Trade</td>
+            <td class="text-end fw-semibold text-danger">{{ stats.worst_trade }} USDT</td>
+          </tr>
+          <tr>
+            <td class="text-muted">Total Fees Paid</td>
+            <td class="text-end fw-semibold">{{ stats.total_fees }} USDT</td>
+            <td class="text-muted">Avg Trade Duration</td>
+            <td class="text-end fw-semibold">{{ stats.avg_duration }}</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+</div>

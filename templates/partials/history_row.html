@@ -69,6 +69,13 @@
       -
     {% endif %}
   </td>
+  <td class="text-nowrap">
+    {% if r.market == 'Futures' %}
+      {{ r.leverage|default:1|floatformat:0 }}x
+    {% else %}
+      -
+    {% endif %}
+  </td>
   <td>
     {% if r.market == 'Futures' and r.status == 'POSITION' %}
       <!-- Manage TPs button -->
