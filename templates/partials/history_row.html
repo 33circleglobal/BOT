@@ -117,6 +117,14 @@
           {% if r.ignore %}<i class="bi bi-slash-circle-fill"></i>{% else %}<i class="bi bi-slash-circle"></i>{% endif %}
         </button>
       </form>
+      <!-- Toggle: move SL to breakeven once a TP fills -->
+      <form method="post" action="{% url 'trading:toggle_breakeven_sl' %}" style="display:inline">
+        {% csrf_token %}
+        <input type="hidden" name="order_id" value="{{ r.id }}" />
+        <button type="submit" class="btn btn-sm {% if r.breakeven %}btn-warning{% else %}btn-outline-secondary{% endif %} ms-1" title="{% if r.breakeven %}Move SL to breakeven on TP fill: ON{% else %}Move SL to breakeven on TP fill: OFF{% endif %}">
+          {% if r.breakeven %}<i class="bi bi-shield-fill-check"></i>{% else %}<i class="bi bi-shield"></i>{% endif %}
+        </button>
+      </form>
     {% elif r.market == 'Spot' and r.status == 'POSITION' %}
       <!-- SL button for Spot -->
       <button class="btn btn-sm btn-outline-danger me-1" title="{% if r.sl_price and r.sl_price > 0 %}Edit SL{% else %}Add SL{% endif %}"

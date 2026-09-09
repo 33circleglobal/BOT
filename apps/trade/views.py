@@ -559,3 +559,24 @@ def toggle_ignore_signal(request):
     except Exception as e:
         messages.error(request, f"Toggle failed: {e}")
     return redirect("accounts:history")
+
+
+@login_required
+def toggle_breakeven_sl(request):
+    if request.method != "POST":
+        return HttpResponseBadRequest("Invalid method")
+    order_id = request.POST.get("order_id")
+    if not order_id:
+        return HttpResponseBadRequest("Missing order_id")
+    try:
+        order = FutureOrder.objects.get(id=order_id, user=request.user)
+        current = order.move_sl_to_breakeven
+        order.move_sl_to_breakeven = not current
+        order.save(update_fields=["move_sl_to_breakeven", "updated_at"])
+        state = "enabled" if not current else "disabled"
+        messages.success(request, f"Move SL to breakeven on TP fill {state} for this order")
+    except FutureOrder.DoesNotExist:
+        messages.error(request, "Order not found")
+    except Exception as e:
+        messages.error(request, f"Toggle failed: {e}")
+    return redirect("accounts:history")

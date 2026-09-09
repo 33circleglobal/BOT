@@ -45,6 +45,12 @@ class FutureOrder(models.Model):
     # If true, ignore opposite webhook signals; user will close manually
     ignore_opposite_signal = models.BooleanField(default=False)
 
+    # If true, move SL to breakeven (entry price) once any TP fills; if
+    # false, a filled TP still resizes the SL's protective quantity but
+    # leaves its trigger price untouched. Off by default — see
+    # refresh_futures_order in apps.trade.utils.refresh_positions.
+    move_sl_to_breakeven = models.BooleanField(default=False)
+
     # User and timestamps
     user = models.ForeignKey(User, on_delete=models.SET_NULL, null=True)
     created_at = models.DateTimeField(auto_now_add=True)

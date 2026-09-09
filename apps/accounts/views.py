@@ -426,6 +426,7 @@ def history_view(request):
                 "quantity": float(o.order_quantity),
                 "leverage": float(o.leverage or 1),
                 "ignore": bool(getattr(o, "ignore_opposite_signal", False)),
+                "breakeven": bool(o.move_sl_to_breakeven),
                 "created_at": o.created_at,
                 "closed_at": o.closed_at,
             }

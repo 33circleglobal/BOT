@@ -66,6 +66,9 @@ def refresh_futures_order(order: FutureOrder) -> bool:
     - Detects filled TP legs and shrinks the protective SL order's quantity
       to match whatever position size remains (e.g. a 10-qty position with
       TPs of 4/3/3: once the 4-qty TP fills, the SL is re-placed at qty 6).
+      If order.move_sl_to_breakeven is set, the SL's trigger price is also
+      moved to entry the first time any TP fills; if not set, only the
+      quantity changes and the trigger price is left as-is.
     - Detects an SL fill: cancels any TPs still open (nothing left for them
       to reduce) and closes the parent order.
     - Detects all TPs filled (position fully closed without the SL ever
@@ -181,12 +184,13 @@ def refresh_futures_order(order: FutureOrder) -> bool:
         if sl_needs_resize and remaining_qty > 0 and (has_live_sl or order.stop_loss_status == FutureOrder.TradeStatus.FAILED):
             breakeven = float(entry)
             already_at_breakeven = abs(float(order.stop_loss_price) - breakeven) < 1e-8
-            if closed_children:
-                # At least one TP has filled — protect the remainder at
-                # breakeven instead of the original stop. Re-sent as-is
-                # (no-op price-wise) if it's already sitting there; the SL
-                # still gets cancelled/re-placed here because its quantity
-                # must shrink to match remaining_qty.
+            if closed_children and order.move_sl_to_breakeven:
+                # At least one TP has filled and this position has opted in
+                # (per-order toggle — see toggle_breakeven_sl) — protect the
+                # remainder at breakeven instead of the original stop.
+                # Re-sent as-is (no-op price-wise) if it's already sitting
+                # there; the SL still gets cancelled/re-placed here because
+                # its quantity must shrink to match remaining_qty.
                 trigger_price = breakeven
             else:
                 trigger_price = float(order.stop_loss_price)
@@ -216,7 +220,7 @@ def refresh_futures_order(order: FutureOrder) -> bool:
                 order.stop_loss_order_id = new_sl["id"]
                 order.stop_loss_status = FutureOrder.TradeStatus.POSITION
                 order.stop_loss_price = trigger_price
-                if closed_children and not already_at_breakeven:
+                if closed_children and order.move_sl_to_breakeven and not already_at_breakeven:
                     logger.info(
                         f"[sl] Moved SL to breakeven ({trigger_price}) for order "
                         f"{order.id} after a TP fill"
