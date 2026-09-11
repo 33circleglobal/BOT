@@ -51,6 +51,16 @@ def quick_close_spot_position(order: SpotOrder, user: User):
                 pass
         open_tps.update(status=SpotTakeProfit.TradeStatus.CANCELLED)
 
+        # Cancel a still-resting DCA (average-down) buy order too — otherwise
+        # it stays live on the exchange and can fill later, silently
+        # reopening exposure on a position we're about to mark CLOSED.
+        if order.dca_status == SpotOrder.TradeStatus.POSITION and order.dca_order_id:
+            try:
+                exchange.cancel_order(id=order.dca_order_id, symbol=symbol)
+            except Exception:
+                pass
+            order.dca_status = SpotOrder.TradeStatus.CANCELLED
+
         # Get current market price for validation
         current_price = get_symbol_last_price(exchange, symbol)
         if not current_price:
