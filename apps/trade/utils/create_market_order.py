@@ -65,13 +65,23 @@ def create_algo_order(
     were migrated to as of Dec 2025. Regular create_order() with these
     types no longer works.
     """
+    # Re-run through priceToPrecision/amountToPrecision and keep the result as
+    # a string: a caller-supplied float (even one that already went through
+    # priceToPrecision/amountToPrecision once) gets str()'d by ccxt when
+    # building the request, and Python renders very small floats (e.g.
+    # 4.852e-05 for a low-price coin like DOGSUSDT, or a small TP quantity on
+    # an expensive coin) in scientific notation — which Binance's algoOrder
+    # endpoint rejects as malformed.
+    trigger_price_str = exchange.priceToPrecision(symbol, trigger_price)
+    quantity_str = exchange.amountToPrecision(symbol, quantity)
+
     params = {
         "symbol": exchange.market_id(symbol),
         "side": side.upper(),
         "type": order_type,  # "STOP_MARKET" or "TAKE_PROFIT_MARKET"
         "algoType": "CONDITIONAL",
-        "quantity": quantity,
-        "triggerPrice": trigger_price,  # note: triggerPrice, not stopPrice
+        "quantity": quantity_str,
+        "triggerPrice": trigger_price_str,  # note: triggerPrice, not stopPrice
         "reduceOnly": reduce_only,
     }
     if working_type:
