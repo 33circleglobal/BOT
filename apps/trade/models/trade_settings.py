@@ -34,6 +34,12 @@ class TradeSettings(models.Model):
         default=5, validators=[MinValueValidator(1), MaxValueValidator(125)]
     )
 
+    # When on, the "update_futures_risk"/"update_spot_risk" webhook actions
+    # (see apps.trade.views.trading_view_webhook) overwrite this user's
+    # max-position fields above based on the current market regime. When
+    # off, this user's settings are left untouched by those webhook updates.
+    sync_risk_from_webhook = models.BooleanField(default=True)
+
     updated_at = models.DateTimeField(auto_now=True)
 
     class Meta:

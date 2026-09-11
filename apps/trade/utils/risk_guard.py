@@ -2,7 +2,9 @@
 
 Max-position/long/short limits are per-user and configurable from the UI
 (see apps.trade.models.TradeSettings and the "Risk Settings" page). The
-one-position-per-symbol rules remain fixed bot-wide behavior.
+webhook's "update_futures_risk" action (see apps.trade.views) overwrites
+these fields bot-wide for every user based on the current market regime.
+The one-position-per-symbol rules remain fixed bot-wide behavior.
 """
 
 from apps.trade.models import FutureOrder, SpotOrder, TradeSettings

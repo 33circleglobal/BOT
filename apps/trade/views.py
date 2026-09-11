@@ -38,6 +38,43 @@ def trading_view_webhook(request):
         print("-------webhook---------")
         print(payload)
         print("-------webhook---------")
+
+        if payload.get("action") == "update_futures_risk":
+            regime = payload.get("regime")
+            try:
+                max_long = int(payload.get("max_long"))
+                max_short = int(payload.get("max_short"))
+                max_total = int(payload.get("max_total"))
+            except (TypeError, ValueError):
+                return JsonResponse(
+                    {"status": "error", "message": "max_long/max_short/max_total must be integers"},
+                    status=400,
+                )
+            TradeSettings.objects.filter(sync_risk_from_webhook=True).update(
+                futures_max_long=max_long,
+                futures_max_short=max_short,
+                futures_max_positions=max_total,
+            )
+            return JsonResponse(
+                {"status": "success", "message": f"Futures risk updated for regime={regime}"}
+            )
+
+        if payload.get("action") == "update_spot_risk":
+            regime = payload.get("regime")
+            try:
+                max_spot_trades = int(payload.get("max_spot_trades"))
+            except (TypeError, ValueError):
+                return JsonResponse(
+                    {"status": "error", "message": "max_spot_trades must be an integer"},
+                    status=400,
+                )
+            TradeSettings.objects.filter(sync_risk_from_webhook=True).update(
+                spot_max_positions=max_spot_trades
+            )
+            return JsonResponse(
+                {"status": "success", "message": f"Spot risk updated for regime={regime}"}
+            )
+
         symbol = payload.get("symbol")
         side = payload.get("side")
         market = payload.get("market", None)

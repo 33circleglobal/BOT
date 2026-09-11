@@ -12,6 +12,21 @@
       </p>
       <form method="post" class="row g-3">
         {% csrf_token %}
+        <div class="col-12">
+          <div class="form-check form-switch">
+            {{ form.sync_risk_from_webhook }}
+            <label class="form-check-label" for="{{ form.sync_risk_from_webhook.id_for_label }}">
+              {{ form.sync_risk_from_webhook.label }}
+            </label>
+          </div>
+          <div class="form-text">
+            When on, the max-position limits below are automatically overwritten whenever the
+            market-regime webhook sends an update. When off, your limits below are left as-is.
+          </div>
+          {% for error in form.sync_risk_from_webhook.errors %}
+            <div class="text-danger small">{{ error }}</div>
+          {% endfor %}
+        </div>
         <div class="col-12"><h6 class="text-uppercase text-muted small mt-2">Futures</h6></div>
         <div class="col-12 col-md-4">
           <label class="form-label">{{ form.futures_max_positions.label }}</label>
