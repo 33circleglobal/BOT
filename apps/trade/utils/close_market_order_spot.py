@@ -21,7 +21,8 @@ def quick_close_spot_position(order: SpotOrder, user: User):
         )
 
         symbol = order.symbol
-        quantity = float(order.final_quantity)
+        full_quantity = float(order.final_quantity or order.order_quantity)
+        quantity = full_quantity
 
         # Determine side (opposite of original order)
         side = "sell" if order.direction == SpotOrder.TradeDirection.LONG else "buy"
@@ -56,9 +57,31 @@ def quick_close_spot_position(order: SpotOrder, user: User):
             logger.error(f"Could not fetch current price for {symbol}")
             return False
 
+        # Any TPs that already filled banked their own realized PnL on their
+        # own leg quantity — only what's left of the position should be sold
+        # here, and only that remaining quantity's PnL should be computed
+        # below, on top of (not instead of) what those legs realized.
+        entry_price = float(order.entry_price)
+        closed_tps = SpotTakeProfit.objects.filter(
+            order=order, status=SpotTakeProfit.TradeStatus.CLOSED
+        )
+        realized_tp_qty = sum((float(c.quantity) for c in closed_tps), 0.0)
+        realized_tp_pnl = sum(
+            (
+                (float(c.price) - entry_price) * float(c.quantity)
+                if order.direction == SpotOrder.TradeDirection.LONG
+                else (entry_price - float(c.price)) * float(c.quantity)
+                for c in closed_tps
+            ),
+            0.0,
+        )
+        quantity = full_quantity - realized_tp_qty
+        if quantity <= 0:
+            quantity = full_quantity
+
         # Some TPs may already have filled before this close (reducing what's
         # actually held) — cap by the real free balance rather than assuming
-        # the full original quantity is still there.
+        # the full remaining quantity is still there.
         base_currency = symbol.split("/")[0]
         try:
             free_base = float(exchange.fetch_balance()["free"].get(base_currency, 0))
@@ -90,17 +113,23 @@ def quick_close_spot_position(order: SpotOrder, user: User):
         order.status = SpotOrder.TradeStatus.CLOSED
         order.closed_at = timezone.now()
 
-        # Calculate PNL
-        entry_value = float(order.entry_price) * quantity
-        exit_value = float(close_order["average"]) * quantity
+        # Calculate PNL for the leg closed just now, then add whatever was
+        # already realized by earlier TP fills.
+        close_leg_value_entry = entry_price * quantity
+        close_leg_value_exit = float(close_order["average"]) * quantity
 
         if order.direction == SpotOrder.TradeDirection.LONG:
-            order.pnl = exit_value - entry_value
+            close_leg_pnl = close_leg_value_exit - close_leg_value_entry
         else:
-            order.pnl = entry_value - exit_value
+            close_leg_pnl = close_leg_value_entry - close_leg_value_exit
+        order.pnl = realized_tp_pnl + close_leg_pnl
 
-        # Calculate PNL percentage
-        order.pnl_percentage = (float(order.pnl) / entry_value) * 100
+        # Percentage denominator is always the ORIGINAL full position's entry
+        # value, not just what's left to close now.
+        full_entry_value = entry_price * full_quantity
+        order.pnl_percentage = (
+            (float(order.pnl) / full_entry_value) * 100 if full_entry_value else 0
+        )
 
         # Update fee information
         if "fee" in close_order:

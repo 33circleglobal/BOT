@@ -349,11 +349,19 @@
       return map;
     }
 
-    function computePnl(market, direction, entry, qty, mark, leverage) {
-      if (!entry || !qty || !isFinite(mark)) return null;
+    function computePnl(market, direction, entry, fullQty, remainingQty, mark, leverage, realizedPnl) {
+      if (!entry || !fullQty || !isFinite(mark)) return null;
+      // Total PnL = whatever's already realized from filled TP legs, plus
+      // the unrealized PnL on whatever quantity is still open — NOT
+      // (mark - entry) * fullQty, which would re-price quantity that
+      // already exited via earlier TP fills.
       const diff = direction === "LONG" ? mark - entry : entry - mark;
-      const pnl = diff * qty;
-      const notional = entry * qty;
+      const unrealized = diff * remainingQty;
+      const pnl = (realizedPnl || 0) + unrealized;
+      // %/ROE denominator is always the position's original margin/notional,
+      // computed from the full original quantity — this doesn't shrink as
+      // TPs fill.
+      const notional = entry * fullQty;
       let pct;
       if (market === "Futures") {
         // Binance shows ROE% = unrealized PnL / initial margin, where
@@ -377,11 +385,15 @@
     function updateFromMark(el, mark) {
       const entry = parseFloat(el.dataset.entry);
       const qty = parseFloat(el.dataset.qty);
+      const remainingQty = el.dataset.remainingQty !== undefined
+        ? parseFloat(el.dataset.remainingQty)
+        : qty;
+      const realizedPnl = parseFloat(el.dataset.realizedPnl) || 0;
       const leverage = parseFloat(el.dataset.leverage) || 1;
       const direction = el.dataset.direction;
       const market = el.dataset.market;
       const orderId = el.dataset.orderId;
-      const result = computePnl(market, direction, entry, qty, mark, leverage);
+      const result = computePnl(market, direction, entry, qty, remainingQty, mark, leverage, realizedPnl);
       if (!result) return;
       paint(document.getElementById("live-pnl-" + market + "-" + orderId), result.pnl, false);
       paint(document.getElementById("live-pnl-pct-" + market + "-" + orderId), result.pct, true);

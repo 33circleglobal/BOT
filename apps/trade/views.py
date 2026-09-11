@@ -39,40 +39,31 @@ def trading_view_webhook(request):
         print(payload)
         print("-------webhook---------")
 
-        if payload.get("action") == "update_futures_risk":
+        if payload.get("action") == "update_market_risk":
             regime = payload.get("regime")
-            try:
-                max_long = int(payload.get("max_long"))
-                max_short = int(payload.get("max_short"))
-                max_total = int(payload.get("max_total"))
-            except (TypeError, ValueError):
+            futures = payload.get("futures") or {}
+            spot = payload.get("spot") or {}
+            if not futures and not spot:
                 return JsonResponse(
-                    {"status": "error", "message": "max_long/max_short/max_total must be integers"},
+                    {"status": "error", "message": "Missing futures/spot risk data"},
                     status=400,
                 )
-            TradeSettings.objects.filter(sync_risk_from_webhook=True).update(
-                futures_max_long=max_long,
-                futures_max_short=max_short,
-                futures_max_positions=max_total,
-            )
-            return JsonResponse(
-                {"status": "success", "message": f"Futures risk updated for regime={regime}"}
-            )
-
-        if payload.get("action") == "update_spot_risk":
-            regime = payload.get("regime")
             try:
-                max_spot_trades = int(payload.get("max_spot_trades"))
+                updates = {}
+                if futures:
+                    updates["futures_max_long"] = int(futures.get("max_long"))
+                    updates["futures_max_short"] = int(futures.get("max_short"))
+                    updates["futures_max_positions"] = int(futures.get("max_total"))
+                if spot:
+                    updates["spot_max_positions"] = int(spot.get("max_trades"))
             except (TypeError, ValueError):
                 return JsonResponse(
-                    {"status": "error", "message": "max_spot_trades must be an integer"},
+                    {"status": "error", "message": "Risk values must be integers"},
                     status=400,
                 )
-            TradeSettings.objects.filter(sync_risk_from_webhook=True).update(
-                spot_max_positions=max_spot_trades
-            )
+            TradeSettings.objects.filter(sync_risk_from_webhook=True).update(**updates)
             return JsonResponse(
-                {"status": "success", "message": f"Spot risk updated for regime={regime}"}
+                {"status": "success", "message": f"Market risk updated for regime={regime}"}
             )
 
         symbol = payload.get("symbol")

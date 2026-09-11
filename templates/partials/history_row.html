@@ -25,6 +25,8 @@
       data-live-pnl="1" data-order-id="{{ r.id }}" data-market="{{ r.market }}"
       data-symbol="{{ r.symbol }}" data-direction="{{ r.direction }}"
       data-entry="{{ r.entry_price }}" data-qty="{{ r.quantity }}"
+      data-remaining-qty="{{ r.remaining_qty|default:r.quantity }}"
+      data-realized-pnl="{{ r.pnl }}"
       data-leverage="{{ r.leverage|default:1 }}"
       {% endif %}>{{ r.pnl|floatformat:2 }}</td>
   <td id="live-pnl-pct-{{ r.market }}-{{ r.id }}" class="{% if r.pnl_pct >= 0 %}text-success{% else %}text-danger{% endif %}">{{ r.pnl_pct|floatformat:2 }}%</td>

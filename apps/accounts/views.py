@@ -377,6 +377,10 @@ def history_view(request):
     # Normalize to common dicts and sort
     records = []
     for o in spot_qs.select_related("user")[:2000]:
+        total_qty = float(o.final_quantity or o.order_quantity)
+        closed_qty = sum(
+            float(q) for q in o.tps.filter(status="CLOSED").values_list("quantity", flat=True)
+        )
         records.append(
             {
                 "id": o.id,
@@ -393,7 +397,8 @@ def history_view(request):
                 "tp_closed": o.tps.filter(status="CLOSED").count(),
                 "dca_price": float(o.dca_price or 0),
                 "dca_status": o.dca_status,
-                "quantity": float(o.final_quantity or o.order_quantity),
+                "quantity": total_qty,
+                "remaining_qty": max(total_qty - closed_qty, 0),
                 "ignore": bool(getattr(o, "ignore_opposite_signal", False)),
                 "created_at": o.created_at,
                 "closed_at": o.closed_at,
@@ -408,6 +413,10 @@ def history_view(request):
             {"price": float(tp["price"]), "percent": float(tp["percent"]), "status": tp["status"]}
             for tp in child_tps
         ]
+        total_qty = float(o.order_quantity)
+        closed_qty = sum(
+            float(q) for q in o.tps.filter(status="CLOSED").values_list("quantity", flat=True)
+        )
         records.append(
             {
                 "id": o.id,
@@ -423,7 +432,8 @@ def history_view(request):
                 "tp_count": o.tps.count(),
                 "tp_closed": o.tps.filter(status="CLOSED").count(),
                 "tps_json": json.dumps(tps_list),
-                "quantity": float(o.order_quantity),
+                "quantity": total_qty,
+                "remaining_qty": max(total_qty - closed_qty, 0),
                 "leverage": float(o.leverage or 1),
                 "ignore": bool(getattr(o, "ignore_opposite_signal", False)),
                 "breakeven": bool(o.move_sl_to_breakeven),

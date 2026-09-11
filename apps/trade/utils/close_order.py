@@ -37,8 +37,30 @@ def quick_close_position(order: FutureOrder, user: User):
             api_key=user_binance_key.api_key, api_secret=user_binance_key.api_secret
         )
         symbol = order.symbol
-        quantity = order.order_quantity
+        full_quantity = order.order_quantity
         side = "sell" if order.direction == FutureOrder.TradeDirection.LONG else "buy"
+
+        # Any TPs that already filled banked their own realized PnL on their
+        # own leg quantity — only what's left of the position should be sent
+        # to the exchange, and only that remaining quantity's PnL should be
+        # computed here, on top of (not instead of) what those legs realized.
+        closed_tps = FutureTakeProfit.objects.filter(
+            order=order, status=FutureTakeProfit.TradeStatus.CLOSED
+        )
+        realized_tp_qty = sum((float(c.quantity) for c in closed_tps), 0.0)
+        entry_price = float(order.entry_price)
+        realized_tp_pnl = sum(
+            (
+                (float(c.price) - entry_price) * float(c.quantity)
+                if order.direction == FutureOrder.TradeDirection.LONG
+                else (entry_price - float(c.price)) * float(c.quantity)
+                for c in closed_tps
+            ),
+            0.0,
+        )
+        quantity = float(full_quantity) - realized_tp_qty
+        if quantity <= 0:
+            quantity = float(full_quantity)
 
         # Cancel protective SL algo order
         cancel_algo_order(exchange, symbol, order.stop_loss_order_id)
@@ -74,17 +96,18 @@ def quick_close_position(order: FutureOrder, user: User):
         fee_cost = fee.get("cost", 0)
         order.total_fee = float(order.total_fee or 0) + float(fee_cost)
 
-        entry_price = float(order.entry_price)
         if order.direction == FutureOrder.TradeDirection.LONG:
-            pnl = float(exit_avg - entry_price) * float(quantity)
+            close_leg_pnl = float(exit_avg - entry_price) * quantity
         else:
-            pnl = float(entry_price - exit_avg) * float(quantity)
-        order.pnl = pnl
+            close_leg_pnl = float(entry_price - exit_avg) * quantity
+        order.pnl = realized_tp_pnl + close_leg_pnl
 
         # ROE% = PnL / initial margin, where initial margin = notional / leverage
         # (matches Binance's displayed PnL% for a leveraged futures position).
+        # Margin is always based on the ORIGINAL full position size, not what's
+        # left to close now.
         leverage = float(order.leverage or 1)
-        notional = entry_price * float(quantity)
+        notional = entry_price * float(full_quantity)
         margin = notional / leverage if leverage else notional
         order.pnl_percentage = (float(order.pnl) / margin) * 100 if margin else 0
 
