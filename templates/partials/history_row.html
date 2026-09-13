@@ -127,6 +127,14 @@
           {% if r.breakeven %}<i class="bi bi-shield-fill-check"></i>{% else %}<i class="bi bi-shield"></i>{% endif %}
         </button>
       </form>
+      <!-- One-shot: move SL to breakeven right now -->
+      <form method="post" action="{% url 'trading:move_sl_to_breakeven_now' %}" style="display:inline" onsubmit="return confirm('Move SL to breakeven now? Everything else on this position is left as-is.')">
+        {% csrf_token %}
+        <input type="hidden" name="order_id" value="{{ r.id }}" />
+        <button type="submit" class="btn btn-sm btn-outline-warning ms-1" title="Move SL to breakeven now">
+          <i class="bi bi-shield-lock"></i>
+        </button>
+      </form>
     {% elif r.market == 'Spot' and r.status == 'POSITION' %}
       <!-- SL button for Spot -->
       <button class="btn btn-sm btn-outline-danger me-1" title="{% if r.sl_price and r.sl_price > 0 %}Edit SL{% else %}Add SL{% endif %}"

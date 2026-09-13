@@ -10,6 +10,8 @@ from apps.trade.task import (
     create_order_of_user_controller,
     close_order_of_user_controller,
     handle_futures_signal_controller,
+    create_order_of_user,
+    handle_futures_signal,
 )
 
 from apps.trade.models import FutureOrder, FutureTakeProfit, TradeSettings
@@ -19,12 +21,15 @@ from apps.trade.utils.common import (
     make_futures_exchange,
     make_spot_exchange,
     get_symbol_last_price,
+    opposite_side,
 )
-from apps.trade.utils.close_order import quick_close_position
+from apps.trade.utils.close_order import quick_close_position, cancel_algo_order
 from apps.trade.utils.close_market_order_spot import quick_close_spot_position
+from apps.trade.utils.create_market_order import create_algo_order
 from apps.trade.utils.refresh_positions import refresh_futures_order, refresh_spot_order
 from apps.trade.models import SpotOrder
 from django.conf import settings
+from decimal import Decimal
 
 
 @csrf_exempt
@@ -608,3 +613,133 @@ def toggle_breakeven_sl(request):
     except Exception as e:
         messages.error(request, f"Toggle failed: {e}")
     return redirect("accounts:history")
+
+
+@login_required
+def move_sl_to_breakeven_now(request):
+    """One-shot action: move this position's SL to breakeven right now,
+    regardless of whether any TP has filled. Unlike `toggle_breakeven_sl`
+    (which only takes effect the next time a TP fills), this reprices the
+    live SL immediately, sized to whatever quantity remains open. Nothing
+    else about the order (TPs, direction, etc.) is touched.
+    """
+    if request.method != "POST":
+        return HttpResponseBadRequest("Invalid method")
+    order_id = request.POST.get("order_id")
+    if not order_id:
+        return HttpResponseBadRequest("Missing order_id")
+    try:
+        order = FutureOrder.objects.get(
+            id=order_id, user=request.user, status=FutureOrder.TradeStatus.POSITION
+        )
+    except FutureOrder.DoesNotExist:
+        messages.error(request, "Order not found or not open")
+        return redirect("accounts:history")
+
+    try:
+        entry = Decimal(str(order.entry_price))
+        total_qty = Decimal(str(order.order_quantity or 0))
+        closed_qty = sum(
+            (Decimal(str(q)) for q in order.tps.filter(
+                status=FutureTakeProfit.TradeStatus.CLOSED
+            ).values_list("quantity", flat=True)),
+            Decimal("0"),
+        )
+        remaining_qty = total_qty - closed_qty
+        if remaining_qty <= 0:
+            messages.error(request, "No remaining quantity to protect")
+            return redirect("accounts:history")
+
+        user_key = UserKey.objects.get(user=request.user, is_active=True)
+        ex = make_futures_exchange(
+            api_key=user_key.api_key, api_secret=user_key.api_secret
+        )
+        entry_side = "buy" if order.direction == FutureOrder.TradeDirection.LONG else "sell"
+        sl_side = opposite_side(entry_side)
+
+        if order.stop_loss_status == FutureOrder.TradeStatus.POSITION and order.stop_loss_order_id:
+            cancel_algo_order(ex, order.symbol, order.stop_loss_order_id)
+
+        new_qty = float(ex.amountToPrecision(order.symbol, float(remaining_qty)))
+        new_sl = create_algo_order(
+            ex,
+            order.symbol,
+            sl_side,
+            "STOP_MARKET",
+            new_qty,
+            trigger_price=float(entry),
+            reduce_only=True,
+        )
+        order.stop_loss_order_id = new_sl["id"]
+        order.stop_loss_status = FutureOrder.TradeStatus.POSITION
+        order.stop_loss_price = entry
+        order.save()
+        messages.success(request, "SL moved to breakeven")
+    except Exception as e:
+        messages.error(request, f"Failed to move SL to breakeven: {e}")
+
+    return redirect("accounts:history")
+
+
+def _parse_manual_tps(request):
+    """Build a tps=[{price, percent}, ...] list from repeated tp_prices[]/
+    tp_percents[] form fields, skipping blank/invalid/non-positive rows."""
+    prices = request.POST.getlist("tp_prices[]")
+    percents = request.POST.getlist("tp_percents[]")
+    defs = []
+    for p, pct in zip(prices, percents):
+        if not p or not pct:
+            continue
+        try:
+            price = float(p)
+            percent = float(pct)
+        except ValueError:
+            continue
+        if percent <= 0:
+            continue
+        defs.append({"price": price, "percent": percent})
+    return defs or None
+
+
+@login_required
+def manual_trade(request):
+    """Lets a user place a trade by hand (bypassing the TradingView webhook)
+    for their own account only. Position size still comes from their own
+    Risk Settings (futures_position_pct / spot_position_pct) — this only
+    lets them pick the symbol/side/SL/TP(s)/DCA. Reuses the same per-user
+    task functions the webhook dispatches to, so all the usual risk checks,
+    opposite-signal handling, etc. apply unchanged.
+    """
+    if request.method == "POST":
+        market = request.POST.get("market")
+        symbol = (request.POST.get("symbol") or "").strip().upper()
+        side = request.POST.get("side")
+
+        if market not in ("futures", "spot") or not symbol or side not in ("buy", "sell"):
+            messages.error(request, "Please provide a market, symbol, and side")
+            return redirect("trading:manual_trade")
+
+        def _to_float(name):
+            val = request.POST.get(name)
+            try:
+                return float(val) if val else None
+            except ValueError:
+                return None
+
+        sl = _to_float("sl")
+        tps = _parse_manual_tps(request)
+        tp = _to_float("tp") if not tps else None
+        dca = _to_float("dca") if market == "spot" else None
+
+        if market == "futures":
+            handle_futures_signal.delay(side, symbol, request.user.id, sl, tp, tps)
+        else:
+            create_order_of_user.delay(side, symbol, "spot", request.user.id, sl, tp, tps, dca)
+
+        messages.success(
+            request,
+            f"Manual {market} {side.upper()} order for {symbol} submitted",
+        )
+        return redirect("accounts:history")
+
+    return render(request, "manual_trade.html")

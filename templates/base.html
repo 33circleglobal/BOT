@@ -191,6 +191,9 @@
       <a href="{% url 'trading:risk_settings' %}" class="{% if request.resolver_match.url_name == 'risk_settings' %}active{% endif %}">
         <i class="bi bi-sliders"></i><span>Risk Settings</span><div class="tooltip-custom">Risk Settings</div>
       </a>
+      <a href="{% url 'trading:manual_trade' %}" class="{% if request.resolver_match.url_name == 'manual_trade' %}active{% endif %}">
+        <i class="bi bi-plus-circle"></i><span>New Trade</span><div class="tooltip-custom">New Trade</div>
+      </a>
       <a href="#" class="{% if request.resolver_match.url_name == 'crypto_news_list' %}active{% endif %}">
         <i class="bi bi-calendar2-week"></i><span>News</span><div class="tooltip-custom">News</div>
       </a>

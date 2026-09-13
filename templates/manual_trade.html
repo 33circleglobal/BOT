@@ -1,0 +1,92 @@
+{% extends "base.html" %}
+
+{% block content %}
+<div class="container-fluid">
+  <div class="card border-0 shadow-sm">
+    <div class="card-body">
+      <h5 class="card-title mb-3">New Manual Trade</h5>
+      <p class="text-muted small">
+        Place a trade by hand instead of waiting for a webhook signal. Position
+        size still follows your <a href="{% url 'trading:risk_settings' %}">Risk Settings</a>
+        (% of balance per trade) — you only choose the symbol, side, and optional SL/TP(s).
+      </p>
+      <form method="post" class="row g-3">
+        {% csrf_token %}
+
+        <div class="col-12">
+          <label class="form-label d-block">Market</label>
+          <div class="btn-group" role="group">
+            <input type="radio" class="btn-check" name="market" id="market-futures" value="futures" checked>
+            <label class="btn btn-outline-primary" for="market-futures">Futures</label>
+            <input type="radio" class="btn-check" name="market" id="market-spot" value="spot">
+            <label class="btn btn-outline-primary" for="market-spot">Spot</label>
+          </div>
+        </div>
+
+        <div class="col-12 col-md-4">
+          <label class="form-label">Symbol</label>
+          <input type="text" name="symbol" class="form-control" placeholder="e.g. BTCUSDT" required>
+        </div>
+        <div class="col-12 col-md-4">
+          <label class="form-label">Side</label>
+          <select name="side" class="form-select" required>
+            <option value="buy">Buy (Futures: Long)</option>
+            <option value="sell">Sell (Futures: Short)</option>
+          </select>
+        </div>
+        <div class="col-12 col-md-4">
+          <label class="form-label">Stop Loss (optional)</label>
+          <input type="number" step="any" name="sl" class="form-control" placeholder="Price">
+          <div class="form-text">Leave blank to use the account default SL.</div>
+        </div>
+
+        <div class="col-12" id="dca-field" style="display:none;">
+          <label class="form-label">DCA / average-down price (optional, Spot only)</label>
+          <input type="number" step="any" name="dca" class="form-control" placeholder="Price">
+        </div>
+
+        <div class="col-12">
+          <label class="form-label">Take Profit (optional)</label>
+          <input type="number" step="any" name="tp" class="form-control" placeholder="Single TP price (ignored if any row below is filled in)">
+        </div>
+
+        <div class="col-12">
+          <label class="form-label d-block">Multi-TP (optional — leave rows blank to skip)</label>
+          <div class="row g-2 mb-1">
+            <div class="col-5"><span class="form-text">Price</span></div>
+            <div class="col-5"><span class="form-text">Position %</span></div>
+          </div>
+          {% for i in "123" %}
+          <div class="row g-2 mb-2">
+            <div class="col-5">
+              <input type="number" step="any" name="tp_prices[]" class="form-control" placeholder="TP{{ i }} price">
+            </div>
+            <div class="col-5">
+              <input type="number" step="any" name="tp_percents[]" class="form-control" placeholder="%">
+            </div>
+          </div>
+          {% endfor %}
+        </div>
+
+        <div class="col-12 mt-2">
+          <button type="submit" class="btn btn-primary">Submit Trade</button>
+        </div>
+      </form>
+    </div>
+  </div>
+</div>
+
+<script>
+  (function () {
+    const futuresRadio = document.getElementById("market-futures");
+    const spotRadio = document.getElementById("market-spot");
+    const dcaField = document.getElementById("dca-field");
+    function sync() {
+      dcaField.style.display = spotRadio.checked ? "" : "none";
+    }
+    futuresRadio.addEventListener("change", sync);
+    spotRadio.addEventListener("change", sync);
+    sync();
+  })();
+</script>
+{% endblock %}
