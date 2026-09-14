@@ -427,7 +427,16 @@ def update_futures_multi_tp(request):
         )
         # Create new multi-TPs
         placed = 0
-        for tp_def in defs:
+        # When the entered percents are meant to cover the whole position
+        # (sum to ~100%), each leg's quantity gets rounded independently via
+        # amountToPrecision, so the legs can sum to slightly less than
+        # base_qty — leaving a dust remainder with no TP sized to close it.
+        # Give the last leg whatever's actually left instead of its percent
+        # share, so the position always fully closes.
+        total_pct = sum(float(d["percent"]) for d in defs)
+        covers_full_position = total_pct >= 99.9
+        remaining_qty = base_qty
+        for i, tp_def in enumerate(defs):
             price = float(tp_def["price"])
             percent = float(tp_def["percent"])
             if order.direction == FutureOrder.TradeDirection.LONG and price <= cur:
@@ -436,7 +445,11 @@ def update_futures_multi_tp(request):
             if order.direction == FutureOrder.TradeDirection.SHORT and price >= cur:
                 messages.error(request, "Each TP must be below current for short")
                 return redirect("accounts:history")
-            qty = base_qty * (percent / 100.0)
+            is_last = i == len(defs) - 1
+            if is_last and covers_full_position:
+                qty = max(remaining_qty, 0)
+            else:
+                qty = base_qty * (percent / 100.0)
             qty_p = float(ex.amountToPrecision(symbol, qty))
             stop_p = float(ex.priceToPrecision(symbol, price))
             # Enforce minimum amount and notional if available
@@ -461,6 +474,7 @@ def update_futures_multi_tp(request):
                     status=FutureTakeProfit.TradeStatus.POSITION,
                 )
                 placed += 1
+                remaining_qty -= qty_p
             except Exception as e:
                 # skip failing leg and continue placing others
                 continue

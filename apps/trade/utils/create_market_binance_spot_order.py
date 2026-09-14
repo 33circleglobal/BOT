@@ -140,6 +140,15 @@ def create_binance_spot_order(
                 tp_defs = list(tps) if tps else [{"price": tp, "percent": 100.0}]
 
                 created_tps = []
+                # When the declared percents are meant to cover the whole
+                # position (sum to ~100%), each leg's quantity gets rounded
+                # independently via amountToPrecision, so the legs can sum to
+                # slightly less than base_qty — leaving a dust remainder with
+                # no TP sized to close it. Give the last leg whatever's
+                # actually left instead of its percent share.
+                total_pct = sum(float(t.get("percent") or 0) for t in tp_defs)
+                covers_full_position = total_pct >= 99.9
+                remaining_qty = base_qty
                 for idx, tp_def in enumerate(tp_defs):
                     try:
                         p = float(tp_def.get("price"))
@@ -159,7 +168,11 @@ def create_binance_spot_order(
                             f"[tp] Spot TP #{idx} for {symbol} invalid: price {p} <= current {cur}"
                         )
                         raise ValueError("TP must be above current price for a spot long")
-                    part_qty = base_qty * (pct / 100.0)
+                    is_last = idx == len(tp_defs) - 1
+                    if is_last and covers_full_position:
+                        part_qty = max(remaining_qty, 0)
+                    else:
+                        part_qty = base_qty * (pct / 100.0)
                     qty_p = float(exchange.amountToPrecision(symbol, part_qty))
                     price_p = float(exchange.priceToPrecision(symbol, p))
                     if qty_p <= 0:
@@ -196,6 +209,7 @@ def create_binance_spot_order(
                             status=SpotTakeProfit.TradeStatus.POSITION,
                         )
                         created_tps.append(tp_o)
+                        remaining_qty -= qty_p
                     except Exception as e:
                         logger.error(
                             f"[tp] Spot TP #{idx} for {symbol} FAILED to place "

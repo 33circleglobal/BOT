@@ -242,6 +242,16 @@ def create_binance_future_order(
                 min_cost = float(
                     (market_info.get("limits") or {}).get("cost", {}).get("min") or 0
                 )
+                # When the declared percents are meant to cover the whole
+                # position (sum to ~100%), each leg's quantity gets rounded
+                # independently via amountToPrecision, so the legs can sum to
+                # slightly less than base_qty — leaving a dust remainder
+                # (e.g. 0.1-0.2) with no TP sized to close it. Give the last
+                # leg whatever's actually left instead of its percent share,
+                # so the position always fully closes.
+                total_pct = sum(float(t.get("percent") or 0) for t in tps)
+                covers_full_position = total_pct >= 99.9
+                remaining_qty = base_qty
                 for idx, tp_def in enumerate(tps):
                     try:
                         p = float(tp_def.get("price"))
@@ -267,7 +277,11 @@ def create_binance_future_order(
                             f"[tp] TP #{idx} for {symbol} invalid: price {p} >= current {cur} for short"
                         )
                         raise ValueError("TP must be below current for short")
-                    part_qty = base_qty * (pct / 100.0)
+                    is_last = idx == len(tps) - 1
+                    if is_last and covers_full_position:
+                        part_qty = max(remaining_qty, 0)
+                    else:
+                        part_qty = base_qty * (pct / 100.0)
                     part_qty_p = float(exchange.amountToPrecision(symbol, part_qty))
                     stop_p = float(exchange.priceToPrecision(symbol, p))
                     if part_qty_p <= 0:
@@ -306,6 +320,7 @@ def create_binance_future_order(
                                 "qty": part_qty_p,
                             }
                         )
+                        remaining_qty -= part_qty_p
                     except Exception as e:
                         logger.error(
                             f"[tp] TP #{idx} for {symbol} FAILED to place "
