@@ -1,7 +1,7 @@
 from django.contrib import admin
 from django.contrib.auth.admin import UserAdmin as DjangoUserAdmin
 
-from apps.accounts.models import User, UserKey, IPAddress
+from apps.accounts.models import User, UserKey, UserHyperLiquidKey, IPAddress
 
 
 # Register your models here.
@@ -13,6 +13,11 @@ class UserAdmin(DjangoUserAdmin):
 @admin.register(UserKey)
 class UserKeyAdmin(admin.ModelAdmin):
     list_display = ["user", "is_active"]
+
+
+@admin.register(UserHyperLiquidKey)
+class UserHyperLiquidKeyAdmin(admin.ModelAdmin):
+    list_display = ["user", "is_active", "api_valid_days"]
 
 
 @admin.register(IPAddress)

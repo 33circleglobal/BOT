@@ -17,6 +17,12 @@ class SpotTakeProfit(models.Model):
     quantity = models.DecimalField(max_digits=20, decimal_places=10, default=0)
     status = models.CharField(max_length=20, choices=TradeStatus.choices, default=TradeStatus.POSITION)
     fee = models.DecimalField(max_digits=20, decimal_places=10, default=0)
+    # Realized PnL for this leg. For HyperLiquid, populated from the
+    # exchange's own reported closedPnl for the fill (see
+    # refresh_positions_hyperliquid.py) rather than recomputed from
+    # price/qty, since that's the authoritative number their own fill
+    # history and third-party trackers (e.g. HyperDash) display.
+    pnl = models.DecimalField(max_digits=20, decimal_places=10, default=0)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 

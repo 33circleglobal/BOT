@@ -27,6 +27,12 @@ from apps.trade.utils.close_order import quick_close_position, cancel_algo_order
 from apps.trade.utils.close_market_order_spot import quick_close_spot_position
 from apps.trade.utils.create_market_order import create_algo_order
 from apps.trade.utils.refresh_positions import refresh_futures_order, refresh_spot_order
+from apps.trade.utils.close_order_hyperliquid import quick_close_hyperliquid_position
+from apps.trade.utils.close_market_order_spot_hyperliquid import quick_close_hyperliquid_spot_position
+from apps.trade.utils.refresh_positions_hyperliquid import (
+    refresh_hyperliquid_futures_order,
+    refresh_hyperliquid_spot_order,
+)
 from apps.trade.models import SpotOrder
 from django.conf import settings
 from decimal import Decimal
@@ -78,6 +84,11 @@ def trading_view_webhook(request):
         tps = payload.get("tps")  # optional list of {price, percent}
         sl = payload.get("sl")
         dca = payload.get("dca")  # optional spot-only average-down price
+        exchange = (
+            "hyperliquid"
+            if str(payload.get("exchange") or "").strip().lower() == "hyperliquid"
+            else "binance"
+        )
 
         if not symbol or side not in ("buy", "sell"):
             return JsonResponse(
@@ -86,12 +97,12 @@ def trading_view_webhook(request):
 
         if market == "futures":
             # Single orchestrator handles open/close/new per user
-            handle_futures_signal_controller.delay(side, symbol, sl, tp, tps)
+            handle_futures_signal_controller.delay(side, symbol, sl, tp, tps, exchange)
         else:
             if side == "buy":
-                create_order_of_user_controller.delay(side, symbol, market, sl, tp, tps, dca)
+                create_order_of_user_controller.delay(side, symbol, market, sl, tp, tps, dca, exchange)
             else:
-                close_order_of_user_controller.delay(side, symbol, market)
+                close_order_of_user_controller.delay(side, symbol, market, exchange)
         return JsonResponse({"status": "success", "message": "Webhook received"})
     except json.JSONDecodeError:
         return JsonResponse(
@@ -503,7 +514,10 @@ def close_futures_order(request):
         order = FutureOrder.objects.get(
             id=order_id, user=request.user, status=FutureOrder.TradeStatus.POSITION
         )
-        quick_close_position(order=order, user=request.user)
+        if order.exchange == FutureOrder.ExchangeType.HYPERLIQUID:
+            quick_close_hyperliquid_position(order=order, user=request.user)
+        else:
+            quick_close_position(order=order, user=request.user)
         messages.success(request, "Position closed")
     except FutureOrder.DoesNotExist:
         messages.error(request, "Order not found or not open")
@@ -523,7 +537,10 @@ def close_spot_order(request):
         order = SpotOrder.objects.get(
             id=order_id, user=request.user, status=SpotOrder.TradeStatus.POSITION
         )
-        ok = quick_close_spot_position(order=order, user=request.user)
+        if order.exchange == SpotOrder.ExchangeType.HYPERLIQUID:
+            ok = quick_close_hyperliquid_spot_position(order=order, user=request.user)
+        else:
+            ok = quick_close_spot_position(order=order, user=request.user)
         if ok:
             messages.success(request, "Position closed")
         else:
@@ -548,12 +565,18 @@ def refresh_order(request):
             order = FutureOrder.objects.get(
                 id=order_id, user=request.user, status=FutureOrder.TradeStatus.POSITION
             )
-            updated = refresh_futures_order(order)
+            if order.exchange == FutureOrder.ExchangeType.HYPERLIQUID:
+                updated = refresh_hyperliquid_futures_order(order)
+            else:
+                updated = refresh_futures_order(order)
         else:
             order = SpotOrder.objects.get(
                 id=order_id, user=request.user, status=SpotOrder.TradeStatus.POSITION
             )
-            updated = refresh_spot_order(order)
+            if order.exchange == SpotOrder.ExchangeType.HYPERLIQUID:
+                updated = refresh_hyperliquid_spot_order(order)
+            else:
+                updated = refresh_spot_order(order)
         if updated:
             messages.success(request, "Order refreshed")
         else:

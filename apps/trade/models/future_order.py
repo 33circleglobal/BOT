@@ -15,11 +15,22 @@ class FutureOrder(models.Model):
         CANCELLED = "CANCELLED", "Cancelled"
         FAILED = "FAILED", "Failed"
 
+    class ExchangeType(models.TextChoices):
+        BINANCE = "BINANCE", "Binance"
+        BINANCE_FUTURES = "BINANCE_FUTURES", "Binance Futures"
+        HYPERLIQUID = "HYPERLIQUID", "HyperLiquid"
+        OTHER = "OTHER", "Other"
+
     order_id = models.CharField(max_length=100, unique=True)
     symbol = models.CharField(max_length=20)
     direction = models.CharField(max_length=20, choices=TradeDirection.choices)
     status = models.CharField(
         max_length=20, choices=TradeStatus.choices, default=TradeStatus.POSITION
+    )
+    exchange = models.CharField(
+        max_length=20,
+        choices=ExchangeType.choices,
+        default=ExchangeType.BINANCE_FUTURES,
     )
     leverage = models.IntegerField(default=1)
     order_quantity = models.DecimalField(max_digits=20, decimal_places=10, default=0)

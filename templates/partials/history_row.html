@@ -23,6 +23,7 @@
       class="{% if r.pnl >= 0 %}text-success{% else %}text-danger{% endif %}"
       {% if r.status == 'POSITION' %}
       data-live-pnl="1" data-order-id="{{ r.id }}" data-market="{{ r.market }}"
+      data-exchange="{{ r.exchange }}" data-hl-coin="{{ r.hl_coin|default:'' }}"
       data-symbol="{{ r.symbol }}" data-direction="{{ r.direction }}"
       data-entry="{{ r.entry_price }}" data-qty="{{ r.quantity }}"
       data-remaining-qty="{{ r.remaining_qty|default:r.quantity }}"

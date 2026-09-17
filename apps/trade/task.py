@@ -1,27 +1,45 @@
 from config import celery_app
 from django.db import transaction
 
-from apps.accounts.models import UserKey, User
+from apps.accounts.models import UserKey, UserHyperLiquidKey, User
 from apps.trade.models import SpotOrder, FutureOrder
 from apps.trade.utils.create_market_order import create_binance_future_order
 from apps.trade.utils.close_order import quick_close_position
 
 from apps.trade.utils.close_market_order_spot import quick_close_spot_position
 from apps.trade.utils.create_market_binance_spot_order import create_binance_spot_order
-from apps.trade.utils.refresh_positions import refresh_futures_order
+from apps.trade.utils.refresh_positions import refresh_futures_order, refresh_spot_order
+
+from apps.trade.utils.create_market_hyperliquid_order import create_hyperliquid_future_order
+from apps.trade.utils.create_market_hyperliquid_spot_order import create_hyperliquid_spot_order
+from apps.trade.utils.close_order_hyperliquid import quick_close_hyperliquid_position
+from apps.trade.utils.close_market_order_spot_hyperliquid import quick_close_hyperliquid_spot_position
+from apps.trade.utils.refresh_positions_hyperliquid import (
+    refresh_hyperliquid_futures_order,
+    refresh_hyperliquid_spot_order,
+)
 
 import logging
 
 logger = logging.getLogger(__name__)
 
+# Rows created before multi-exchange support (or by legacy Binance signals
+# that don't pass an "exchange" field) may carry either BINANCE or
+# BINANCE_FUTURES depending on market — treat both as "the Binance signal".
+_BINANCE_EXCHANGES = (FutureOrder.ExchangeType.BINANCE, FutureOrder.ExchangeType.BINANCE_FUTURES)
+_BINANCE_SPOT_EXCHANGES = (SpotOrder.ExchangeType.BINANCE, SpotOrder.ExchangeType.BINANCE_FUTURES)
+
 
 @celery_app.task(bind=True)
-def create_order_of_user_controller(self, side, symbol, market, sl=None, tp=None, tps=None, dca=None):
+def create_order_of_user_controller(self, side, symbol, market, sl=None, tp=None, tps=None, dca=None, exchange="binance"):
     try:
-        users_key = UserKey.objects.filter(is_active=True)
+        if exchange == "hyperliquid":
+            users_key = UserHyperLiquidKey.objects.filter(is_active=True)
+        else:
+            users_key = UserKey.objects.filter(is_active=True)
 
         for user_key in users_key:
-            create_order_of_user.delay(side, symbol, market, user_key.user.id, sl, tp, tps, dca)
+            create_order_of_user.delay(side, symbol, market, user_key.user.id, sl, tp, tps, dca, exchange)
     except Exception as e:
         print(f"Error dispatching  order create: {str(e)}")
 
@@ -29,20 +47,32 @@ def create_order_of_user_controller(self, side, symbol, market, sl=None, tp=None
 @celery_app.task(
     bind=True, autoretry_for=(Exception,), retry_backoff=True, max_retries=3
 )
-def create_order_of_user(self, side, symbol, market, user_id, sl=None, tp=None, tps=None, dca=None):
+def create_order_of_user(self, side, symbol, market, user_id, sl=None, tp=None, tps=None, dca=None, exchange="binance"):
     try:
         user = User.objects.get(id=user_id)
-        if market == "futures":
-            create_binance_future_order(side, symbol, user, sl=sl, tp=tp, tps=tps)
+        if exchange == "hyperliquid":
+            if market == "futures":
+                create_hyperliquid_future_order(side, symbol, user, sl=sl, tp=tp, tps=tps)
+            else:
+                create_hyperliquid_spot_order(side, symbol, user, sl=sl, tp=tp, tps=tps, dca=dca)
         else:
-            create_binance_spot_order(side, symbol, user, sl=sl, tp=tp, tps=tps, dca=dca)
+            if market == "futures":
+                create_binance_future_order(side, symbol, user, sl=sl, tp=tp, tps=tps)
+            else:
+                create_binance_spot_order(side, symbol, user, sl=sl, tp=tp, tps=tps, dca=dca)
     except Exception as e:
         print("Caught exception:", e)
         raise self.retry(exc=e)
 
 
 @celery_app.task(bind=True)
-def close_order_of_user_controller(self, side, symbol, market):
+def close_order_of_user_controller(self, side, symbol, market, exchange="binance"):
+    exchange_futures = (
+        (FutureOrder.ExchangeType.HYPERLIQUID,) if exchange == "hyperliquid" else _BINANCE_EXCHANGES
+    )
+    exchange_spot = (
+        (SpotOrder.ExchangeType.HYPERLIQUID,) if exchange == "hyperliquid" else _BINANCE_SPOT_EXCHANGES
+    )
     if market == "futures":
         position_direction = (
             FutureOrder.TradeDirection.LONG
@@ -55,6 +85,7 @@ def close_order_of_user_controller(self, side, symbol, market):
             status=FutureOrder.TradeStatus.POSITION,
             direction=position_direction,
             ignore_opposite_signal=False,
+            exchange__in=exchange_futures,
         )
         print(orders)
         for order in orders:
@@ -71,6 +102,7 @@ def close_order_of_user_controller(self, side, symbol, market):
             status=SpotOrder.TradeStatus.POSITION,
             direction=position_direction,
             ignore_opposite_signal=False,
+            exchange__in=exchange_spot,
         )
         print(orders)
         for order in orders:
@@ -84,10 +116,16 @@ def quick_close_user_order(self, order_id, market):
     try:
         if market == "futures":
             order = FutureOrder.objects.get(id=order_id)
-            quick_close_position(order=order, user=order.user)
+            if order.exchange == FutureOrder.ExchangeType.HYPERLIQUID:
+                quick_close_hyperliquid_position(order=order, user=order.user)
+            else:
+                quick_close_position(order=order, user=order.user)
         else:
             order = SpotOrder.objects.get(id=order_id)
-            quick_close_spot_position(order=order, user=order.user)
+            if order.exchange == SpotOrder.ExchangeType.HYPERLIQUID:
+                quick_close_hyperliquid_spot_position(order=order, user=order.user)
+            else:
+                quick_close_spot_position(order=order, user=order.user)
     except Exception as e:
         print("Caught exception:", e)
         raise self.retry(exc=e)
@@ -95,30 +133,40 @@ def quick_close_user_order(self, order_id, market):
 
 # Futures signal orchestration respecting existing positions
 @celery_app.task(bind=True)
-def handle_futures_signal_controller(self, side, symbol, sl=None, tp=None, tps=None):
+def handle_futures_signal_controller(self, side, symbol, sl=None, tp=None, tps=None, exchange="binance"):
     try:
-        users_key = UserKey.objects.filter(is_active=True)
+        if exchange == "hyperliquid":
+            users_key = UserHyperLiquidKey.objects.filter(is_active=True)
+        else:
+            users_key = UserKey.objects.filter(is_active=True)
         for user_key in users_key:
-            handle_futures_signal.delay(side, symbol, user_key.user.id, sl, tp, tps)
+            handle_futures_signal.delay(side, symbol, user_key.user.id, sl, tp, tps, exchange)
     except Exception as e:
         logger.error(f"Error dispatching futures signal: {e}")
 
 
 @celery_app.task(bind=True, autoretry_for=(Exception,), retry_backoff=True, max_retries=3)
-def handle_futures_signal(self, side, symbol, user_id, sl=None, tp=None, tps=None):
+def handle_futures_signal(self, side, symbol, user_id, sl=None, tp=None, tps=None, exchange="binance"):
     try:
         user = User.objects.get(id=user_id)
         side = side.lower()
-        # find any open positions for user+symbol
+        exchange_futures = (
+            (FutureOrder.ExchangeType.HYPERLIQUID,) if exchange == "hyperliquid" else _BINANCE_EXCHANGES
+        )
+        # find any open positions for user+symbol on this signal's exchange
         open_orders = FutureOrder.objects.filter(
             user=user,
             symbol=symbol,
             status=FutureOrder.TradeStatus.POSITION,
+            exchange__in=exchange_futures,
         ).order_by("-created_at")
 
         if not open_orders.exists():
             # No open trade: open new
-            create_binance_future_order(side, symbol, user, sl=sl, tp=tp, tps=tps)
+            if exchange == "hyperliquid":
+                create_hyperliquid_future_order(side, symbol, user, sl=sl, tp=tp, tps=tps)
+            else:
+                create_binance_future_order(side, symbol, user, sl=sl, tp=tp, tps=tps)
             return
 
         existing = open_orders.first()
@@ -133,8 +181,12 @@ def handle_futures_signal(self, side, symbol, user_id, sl=None, tp=None, tps=Non
             return
 
         # Opposite signal: close then open new
-        quick_close_position(order=existing, user=user)
-        create_binance_future_order(side, symbol, user, sl=sl, tp=tp, tps=tps)
+        if exchange == "hyperliquid":
+            quick_close_hyperliquid_position(order=existing, user=user)
+            create_hyperliquid_future_order(side, symbol, user, sl=sl, tp=tp, tps=tps)
+        else:
+            quick_close_position(order=existing, user=user)
+            create_binance_future_order(side, symbol, user, sl=sl, tp=tp, tps=tps)
     except Exception as e:
         print("Caught exception:", e)
         raise self.retry(exc=e)
@@ -158,11 +210,43 @@ def refresh_all_futures_positions(self):
 def refresh_single_future_position(self, order_id):
     try:
         order = FutureOrder.objects.get(id=order_id)
-        refresh_futures_order(order)
+        if order.exchange == FutureOrder.ExchangeType.HYPERLIQUID:
+            refresh_hyperliquid_futures_order(order)
+        else:
+            refresh_futures_order(order)
     except FutureOrder.DoesNotExist:
         pass
     except Exception as e:
         logger.error(f"Error refreshing futures order {order_id}: {e}")
+        raise self.retry(exc=e)
+
+
+# --- Periodic spot position refresh (celery beat, every 5 min) -----------------
+@celery_app.task(bind=True)
+def refresh_all_spot_positions(self):
+    """Beat-scheduled controller: fan out one refresh task per open spot position."""
+    try:
+        open_orders = SpotOrder.objects.filter(status=SpotOrder.TradeStatus.POSITION)
+        for order in open_orders:
+            refresh_single_spot_position.delay(order.id)
+    except Exception as e:
+        logger.error(f"Error dispatching spot position refresh: {e}")
+
+
+@celery_app.task(
+    bind=True, autoretry_for=(Exception,), retry_backoff=True, max_retries=3
+)
+def refresh_single_spot_position(self, order_id):
+    try:
+        order = SpotOrder.objects.get(id=order_id)
+        if order.exchange == SpotOrder.ExchangeType.HYPERLIQUID:
+            refresh_hyperliquid_spot_order(order)
+        else:
+            refresh_spot_order(order)
+    except SpotOrder.DoesNotExist:
+        pass
+    except Exception as e:
+        logger.error(f"Error refreshing spot order {order_id}: {e}")
         raise self.retry(exc=e)
 
 

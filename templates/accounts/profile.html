@@ -1,0 +1,386 @@
+{% extends "base.html" %}
+
+{% block content %}
+<div class="container-fluid">
+  <div class="card border-0 shadow-sm">
+    <div class="card-body">
+      <div class="d-flex justify-content-between align-items-center mb-3">
+        <div>
+          <h5 class="card-title mb-1">Binance API Key</h5>
+          <p class="text-muted small mb-0">
+            Used by the bot to place and manage orders on your Binance account.
+            Values are encrypted at rest and are never shown in plain text once saved.
+          </p>
+        </div>
+        {% if user_key %}
+        <div>
+          <button type="button" class="btn btn-outline-primary btn-sm" data-bs-toggle="modal" data-bs-target="#userKeyModal" {% if has_active_trades %}disabled{% endif %}>
+            <i class="bi bi-pencil-square"></i> Edit
+          </button>
+          <button type="button" class="btn btn-outline-danger btn-sm" data-bs-toggle="modal" data-bs-target="#deleteKeyModal" {% if has_active_trades %}disabled{% endif %}>
+            <i class="bi bi-trash"></i> Delete
+          </button>
+        </div>
+        {% endif %}
+      </div>
+
+      {% if user_key and has_active_trades %}
+        <div class="alert alert-warning py-2 small mb-3">
+          <i class="bi bi-exclamation-triangle"></i>
+          You have active trades open. Editing or deleting your API key is disabled until they
+          are closed, to avoid the bot losing access to a position mid-trade.
+        </div>
+      {% endif %}
+
+      {% if user_key %}
+        <table class="table table-sm align-middle mb-0">
+          <tbody>
+            <tr>
+              <th class="text-muted small" style="width: 180px;">Status</th>
+              <td>
+                {% if user_key.is_active %}
+                  <span class="badge bg-success">Active</span>
+                {% else %}
+                  <span class="badge bg-secondary">Inactive</span>
+                {% endif %}
+              </td>
+            </tr>
+            <tr>
+              <th class="text-muted small">API Key (encrypted)</th>
+              <td>
+                <code class="text-break">{{ user_key.encrypted_api_key }}</code>
+              </td>
+            </tr>
+            <tr>
+              <th class="text-muted small">API Secret (encrypted)</th>
+              <td>
+                <code class="text-break">{{ user_key.encrypted_api_secret }}</code>
+              </td>
+            </tr>
+          </tbody>
+        </table>
+      {% else %}
+        <form method="post" class="row g-3">
+          {% csrf_token %}
+          <input type="hidden" name="action" value="save">
+          <div class="col-12 col-md-6">
+            <label class="form-label">{{ form.api_key.label }}</label>
+            {{ form.api_key }}
+            {% for error in form.api_key.errors %}
+              <div class="text-danger small">{{ error }}</div>
+            {% endfor %}
+          </div>
+          <div class="col-12 col-md-6">
+            <label class="form-label">{{ form.api_secret.label }}</label>
+            {{ form.api_secret }}
+            {% for error in form.api_secret.errors %}
+              <div class="text-danger small">{{ error }}</div>
+            {% endfor %}
+          </div>
+          <div class="col-12">
+            <div class="form-check form-switch">
+              {{ form.is_active }}
+              <label class="form-check-label" for="{{ form.is_active.id_for_label }}">
+                {{ form.is_active.label }}
+              </label>
+            </div>
+          </div>
+          <div class="col-12">
+            <button type="submit" class="btn btn-primary">Save API Key</button>
+          </div>
+        </form>
+      {% endif %}
+    </div>
+  </div>
+
+  <div class="card border-0 shadow-sm mt-3">
+    <div class="card-body">
+      <div class="d-flex justify-content-between align-items-center mb-3">
+        <div>
+          <h5 class="card-title mb-1">HyperLiquid API Key</h5>
+          <p class="text-muted small mb-0">
+            Used by the bot to place and manage orders on your HyperLiquid account.
+            Values are encrypted at rest and are never shown in plain text once saved.
+          </p>
+        </div>
+        {% if hl_key %}
+        <div>
+          <button type="button" class="btn btn-outline-primary btn-sm" data-bs-toggle="modal" data-bs-target="#userHlKeyModal" {% if has_active_trades %}disabled{% endif %}>
+            <i class="bi bi-pencil-square"></i> Edit
+          </button>
+          <button type="button" class="btn btn-outline-danger btn-sm" data-bs-toggle="modal" data-bs-target="#deleteHlKeyModal" {% if has_active_trades %}disabled{% endif %}>
+            <i class="bi bi-trash"></i> Delete
+          </button>
+        </div>
+        {% endif %}
+      </div>
+
+      {% if hl_key and has_active_trades %}
+        <div class="alert alert-warning py-2 small mb-3">
+          <i class="bi bi-exclamation-triangle"></i>
+          You have active trades open. Editing or deleting your API key is disabled until they
+          are closed, to avoid the bot losing access to a position mid-trade.
+        </div>
+      {% endif %}
+
+      {% if hl_key %}
+        <table class="table table-sm align-middle mb-0">
+          <tbody>
+            <tr>
+              <th class="text-muted small" style="width: 180px;">Status</th>
+              <td>
+                {% if hl_key.is_active %}
+                  <span class="badge bg-success">Active</span>
+                {% else %}
+                  <span class="badge bg-secondary">Inactive</span>
+                {% endif %}
+              </td>
+            </tr>
+            <tr>
+              <th class="text-muted small">Master Wallet Address (encrypted)</th>
+              <td>
+                <code class="text-break">{{ hl_key.encrypted_master_wallet_address }}</code>
+              </td>
+            </tr>
+            <tr>
+              <th class="text-muted small">API Wallet Address (encrypted)</th>
+              <td>
+                <code class="text-break">{{ hl_key.encrypted_api_wallet_address }}</code>
+              </td>
+            </tr>
+            <tr>
+              <th class="text-muted small">API Private Key (encrypted)</th>
+              <td>
+                <code class="text-break">{{ hl_key.encrypted_api_private_key }}</code>
+              </td>
+            </tr>
+            <tr>
+              <th class="text-muted small">API Valid Days</th>
+              <td>{{ hl_key.api_valid_days }}</td>
+            </tr>
+          </tbody>
+        </table>
+      {% else %}
+        <form method="post" class="row g-3">
+          {% csrf_token %}
+          <input type="hidden" name="action" value="save_hyperliquid">
+          <div class="col-12 col-md-6">
+            <label class="form-label">{{ hl_form.master_wallet_address.label }}</label>
+            {{ hl_form.master_wallet_address }}
+            {% for error in hl_form.master_wallet_address.errors %}
+              <div class="text-danger small">{{ error }}</div>
+            {% endfor %}
+          </div>
+          <div class="col-12 col-md-6">
+            <label class="form-label">{{ hl_form.api_wallet_address.label }}</label>
+            {{ hl_form.api_wallet_address }}
+            {% for error in hl_form.api_wallet_address.errors %}
+              <div class="text-danger small">{{ error }}</div>
+            {% endfor %}
+          </div>
+          <div class="col-12 col-md-6">
+            <label class="form-label">{{ hl_form.api_private_key.label }}</label>
+            {{ hl_form.api_private_key }}
+            {% for error in hl_form.api_private_key.errors %}
+              <div class="text-danger small">{{ error }}</div>
+            {% endfor %}
+          </div>
+          <div class="col-12 col-md-6">
+            <label class="form-label">{{ hl_form.api_valid_days.label }}</label>
+            {{ hl_form.api_valid_days }}
+            {% for error in hl_form.api_valid_days.errors %}
+              <div class="text-danger small">{{ error }}</div>
+            {% endfor %}
+          </div>
+          <div class="col-12">
+            <div class="form-check form-switch">
+              {{ hl_form.is_active }}
+              <label class="form-check-label" for="{{ hl_form.is_active.id_for_label }}">
+                {{ hl_form.is_active.label }}
+              </label>
+            </div>
+          </div>
+          <div class="col-12">
+            <button type="submit" class="btn btn-primary">Save API Key</button>
+          </div>
+        </form>
+      {% endif %}
+    </div>
+  </div>
+</div>
+
+{% if user_key %}
+<!-- Edit Modal -->
+<div class="modal fade" id="userKeyModal" tabindex="-1" aria-hidden="true">
+  <div class="modal-dialog">
+    <div class="modal-content">
+      <form method="post">
+        {% csrf_token %}
+        <input type="hidden" name="action" value="save">
+        <div class="modal-header">
+          <h5 class="modal-title">Edit Binance API Key</h5>
+          <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+        </div>
+        <div class="modal-body">
+          <p class="text-muted small">
+            For security the current values are not shown. Enter the new key and secret to replace them.
+          </p>
+          <div class="mb-3">
+            <label class="form-label">{{ form.api_key.label }}</label>
+            {{ form.api_key }}
+            {% for error in form.api_key.errors %}
+              <div class="text-danger small">{{ error }}</div>
+            {% endfor %}
+          </div>
+          <div class="mb-3">
+            <label class="form-label">{{ form.api_secret.label }}</label>
+            {{ form.api_secret }}
+            {% for error in form.api_secret.errors %}
+              <div class="text-danger small">{{ error }}</div>
+            {% endfor %}
+          </div>
+          <div class="form-check form-switch">
+            {{ form.is_active }}
+            <label class="form-check-label" for="{{ form.is_active.id_for_label }}">
+              {{ form.is_active.label }}
+            </label>
+          </div>
+        </div>
+        <div class="modal-footer">
+          <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+          <button type="submit" class="btn btn-primary">Save Changes</button>
+        </div>
+      </form>
+    </div>
+  </div>
+</div>
+
+<!-- Delete Modal -->
+<div class="modal fade" id="deleteKeyModal" tabindex="-1" aria-hidden="true">
+  <div class="modal-dialog">
+    <div class="modal-content">
+      <form method="post">
+        {% csrf_token %}
+        <input type="hidden" name="action" value="delete">
+        <div class="modal-header">
+          <h5 class="modal-title">Delete API Key</h5>
+          <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+        </div>
+        <div class="modal-body">
+          <p class="mb-0">
+            Are you sure you want to delete your Binance API key? The bot will not be able to
+            place or manage orders until a new key is added.
+          </p>
+        </div>
+        <div class="modal-footer">
+          <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+          <button type="submit" class="btn btn-danger">Delete</button>
+        </div>
+      </form>
+    </div>
+  </div>
+</div>
+{% endif %}
+
+{% if hl_key %}
+<!-- HyperLiquid Edit Modal -->
+<div class="modal fade" id="userHlKeyModal" tabindex="-1" aria-hidden="true">
+  <div class="modal-dialog">
+    <div class="modal-content">
+      <form method="post">
+        {% csrf_token %}
+        <input type="hidden" name="action" value="save_hyperliquid">
+        <div class="modal-header">
+          <h5 class="modal-title">Edit HyperLiquid API Key</h5>
+          <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+        </div>
+        <div class="modal-body">
+          <p class="text-muted small">
+            For security the current values are not shown. Enter the new values to replace them.
+          </p>
+          <div class="mb-3">
+            <label class="form-label">{{ hl_form.master_wallet_address.label }}</label>
+            {{ hl_form.master_wallet_address }}
+            {% for error in hl_form.master_wallet_address.errors %}
+              <div class="text-danger small">{{ error }}</div>
+            {% endfor %}
+          </div>
+          <div class="mb-3">
+            <label class="form-label">{{ hl_form.api_wallet_address.label }}</label>
+            {{ hl_form.api_wallet_address }}
+            {% for error in hl_form.api_wallet_address.errors %}
+              <div class="text-danger small">{{ error }}</div>
+            {% endfor %}
+          </div>
+          <div class="mb-3">
+            <label class="form-label">{{ hl_form.api_private_key.label }}</label>
+            {{ hl_form.api_private_key }}
+            {% for error in hl_form.api_private_key.errors %}
+              <div class="text-danger small">{{ error }}</div>
+            {% endfor %}
+          </div>
+          <div class="mb-3">
+            <label class="form-label">{{ hl_form.api_valid_days.label }}</label>
+            {{ hl_form.api_valid_days }}
+            {% for error in hl_form.api_valid_days.errors %}
+              <div class="text-danger small">{{ error }}</div>
+            {% endfor %}
+          </div>
+          <div class="form-check form-switch">
+            {{ hl_form.is_active }}
+            <label class="form-check-label" for="{{ hl_form.is_active.id_for_label }}">
+              {{ hl_form.is_active.label }}
+            </label>
+          </div>
+        </div>
+        <div class="modal-footer">
+          <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+          <button type="submit" class="btn btn-primary">Save Changes</button>
+        </div>
+      </form>
+    </div>
+  </div>
+</div>
+
+<!-- HyperLiquid Delete Modal -->
+<div class="modal fade" id="deleteHlKeyModal" tabindex="-1" aria-hidden="true">
+  <div class="modal-dialog">
+    <div class="modal-content">
+      <form method="post">
+        {% csrf_token %}
+        <input type="hidden" name="action" value="delete_hyperliquid">
+        <div class="modal-header">
+          <h5 class="modal-title">Delete API Key</h5>
+          <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+        </div>
+        <div class="modal-body">
+          <p class="mb-0">
+            Are you sure you want to delete your HyperLiquid API key? The bot will not be able to
+            place or manage orders until a new key is added.
+          </p>
+        </div>
+        <div class="modal-footer">
+          <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+          <button type="submit" class="btn btn-danger">Delete</button>
+        </div>
+      </form>
+    </div>
+  </div>
+</div>
+{% endif %}
+
+{% if user_key and form.errors %}
+<script>
+  document.addEventListener("DOMContentLoaded", function () {
+    new bootstrap.Modal(document.getElementById("userKeyModal")).show();
+  });
+</script>
+{% endif %}
+{% if hl_key and hl_form.errors %}
+<script>
+  document.addEventListener("DOMContentLoaded", function () {
+    new bootstrap.Modal(document.getElementById("userHlKeyModal")).show();
+  });
+</script>
+{% endif %}
+{% endblock %}

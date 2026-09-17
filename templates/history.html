@@ -26,28 +26,70 @@
 
   <div class="card border-0 shadow-sm">
     <div class="card-body">
-      <ul class="nav nav-tabs" id="marketTabs" role="tablist">
+      <ul class="nav nav-tabs" id="exchangeTabs" role="tablist">
         <li class="nav-item" role="presentation">
-          <button class="nav-link active" id="spot-market-tab" data-bs-toggle="tab" data-bs-target="#spot-market-pane" type="button" role="tab">
-            Spot
+          <button class="nav-link active" id="binance-exchange-tab" data-bs-toggle="tab" data-bs-target="#binance-exchange-pane" type="button" role="tab">
+            Binance <span class="badge bg-secondary ms-1">{{ binance_total }}</span>
           </button>
         </li>
         <li class="nav-item" role="presentation">
-          <button class="nav-link" id="futures-market-tab" data-bs-toggle="tab" data-bs-target="#futures-market-pane" type="button" role="tab">
-            Futures
+          <button class="nav-link" id="hyperliquid-exchange-tab" data-bs-toggle="tab" data-bs-target="#hyperliquid-exchange-pane" type="button" role="tab">
+            HyperLiquid <span class="badge bg-secondary ms-1">{{ hl_total }}</span>
           </button>
         </li>
       </ul>
       <div class="tab-content pt-3">
-        <div class="tab-pane fade show active" id="spot-market-pane" role="tabpanel">
-          {% with buckets=spot_buckets counts=spot_counts prefix="spot" %}
-            {% include "partials/history_market_pane.html" %}
-          {% endwith %}
+        <div class="tab-pane fade show active" id="binance-exchange-pane" role="tabpanel">
+          <ul class="nav nav-tabs" id="marketTabs" role="tablist">
+            <li class="nav-item" role="presentation">
+              <button class="nav-link active" id="spot-market-tab" data-bs-toggle="tab" data-bs-target="#spot-market-pane" type="button" role="tab">
+                Spot
+              </button>
+            </li>
+            <li class="nav-item" role="presentation">
+              <button class="nav-link" id="futures-market-tab" data-bs-toggle="tab" data-bs-target="#futures-market-pane" type="button" role="tab">
+                Futures
+              </button>
+            </li>
+          </ul>
+          <div class="tab-content pt-3">
+            <div class="tab-pane fade show active" id="spot-market-pane" role="tabpanel">
+              {% with buckets=spot_buckets counts=spot_counts prefix="spot" %}
+                {% include "partials/history_market_pane.html" %}
+              {% endwith %}
+            </div>
+            <div class="tab-pane fade" id="futures-market-pane" role="tabpanel">
+              {% with buckets=fut_buckets counts=fut_counts prefix="fut" %}
+                {% include "partials/history_market_pane.html" %}
+              {% endwith %}
+            </div>
+          </div>
         </div>
-        <div class="tab-pane fade" id="futures-market-pane" role="tabpanel">
-          {% with buckets=fut_buckets counts=fut_counts prefix="fut" %}
-            {% include "partials/history_market_pane.html" %}
-          {% endwith %}
+        <div class="tab-pane fade" id="hyperliquid-exchange-pane" role="tabpanel">
+          <ul class="nav nav-tabs" id="hlMarketTabs" role="tablist">
+            <li class="nav-item" role="presentation">
+              <button class="nav-link active" id="hlspot-market-tab" data-bs-toggle="tab" data-bs-target="#hlspot-market-pane" type="button" role="tab">
+                Spot
+              </button>
+            </li>
+            <li class="nav-item" role="presentation">
+              <button class="nav-link" id="hlfut-market-tab" data-bs-toggle="tab" data-bs-target="#hlfut-market-pane" type="button" role="tab">
+                Futures
+              </button>
+            </li>
+          </ul>
+          <div class="tab-content pt-3">
+            <div class="tab-pane fade show active" id="hlspot-market-pane" role="tabpanel">
+              {% with buckets=hl_spot_buckets counts=hl_spot_counts prefix="hlspot" %}
+                {% include "partials/history_market_pane.html" %}
+              {% endwith %}
+            </div>
+            <div class="tab-pane fade" id="hlfut-market-pane" role="tabpanel">
+              {% with buckets=hl_fut_buckets counts=hl_fut_counts prefix="hlfut" %}
+                {% include "partials/history_market_pane.html" %}
+              {% endwith %}
+            </div>
+          </div>
         </div>
       </div>
     </div>
@@ -338,7 +380,7 @@
 
     function collectTargets(market) {
       const els = document.querySelectorAll(
-        '[data-live-pnl="1"][data-market="' + market + '"]'
+        '[data-live-pnl="1"][data-market="' + market + '"][data-exchange="Binance"]'
       );
       const map = {};
       els.forEach((el) => {
@@ -515,6 +557,105 @@
 
     connect("Spot", "wss://stream.binance.com:9443");
     connect("Futures", "wss://fstream.binance.com");
+
+    // --- Live PnL via HyperLiquid websocket ---
+    // Each row's data-hl-coin is pre-resolved server-side (see
+    // get_hyperliquid_ws_coin) to the exact "coin" id HyperLiquid's
+    // per-symbol "activeAssetCtx" channel expects — a perp's ticker (e.g.
+    // "SUI") or a spot pair's internal id (e.g. "@142"). This pushes at
+    // HyperLiquid's block cadence; the aggregate "allMids" subscription is
+    // deliberately not used here since it only arrives at the server's
+    // slower batch cadence (https://github.com/ccxt/ccxt/issues/27475).
+    function connectHyperliquid() {
+      const els = document.querySelectorAll('[data-live-pnl="1"][data-exchange="HyperLiquid"]');
+      if (els.length === 0) return;
+
+      const targets = {};
+      els.forEach((el) => {
+        const coin = el.dataset.hlCoin;
+        if (!coin) return;
+        (targets[coin] = targets[coin] || []).push(el);
+      });
+      const coinKeys = Object.keys(targets);
+      if (coinKeys.length === 0) return;
+
+      const url = "wss://api.hyperliquid.xyz/ws";
+      let ws;
+      let closedByUs = false;
+      let retryDelay = 2000;
+      let watchdog;
+
+      function armWatchdog() {
+        clearTimeout(watchdog);
+        watchdog = setTimeout(() => {
+          try {
+            ws.close();
+          } catch (e) {
+            /* noop */
+          }
+        }, 15000);
+      }
+
+      function open() {
+        try {
+          ws = new WebSocket(url);
+        } catch (e) {
+          return;
+        }
+        ws.onopen = () => {
+          retryDelay = 2000;
+          coinKeys.forEach((coin) => {
+            ws.send(
+              JSON.stringify({
+                method: "subscribe",
+                subscription: { type: "activeAssetCtx", coin: coin },
+              })
+            );
+          });
+          armWatchdog();
+        };
+        ws.onmessage = (evt) => {
+          armWatchdog();
+          try {
+            const msg = JSON.parse(evt.data);
+            if (msg.channel !== "activeAssetCtx" && msg.channel !== "activeSpotAssetCtx") return;
+            const data = msg.data || {};
+            const ctx = data.ctx || {};
+            const mark = parseFloat(ctx.midPx ?? ctx.markPx);
+            const els2 = targets[data.coin];
+            if (els2 && isFinite(mark)) els2.forEach((el) => updateFromMark(el, mark));
+          } catch (e) {
+            /* ignore malformed message */
+          }
+        };
+        ws.onclose = () => {
+          if (closedByUs) return;
+          setTimeout(open, retryDelay);
+          retryDelay = Math.min(retryDelay * 1.5, 15000);
+        };
+        ws.onerror = () => {
+          try {
+            ws.close();
+          } catch (e) {
+            /* noop */
+          }
+        };
+      }
+
+      open();
+
+      window.addEventListener("beforeunload", () => {
+        closedByUs = true;
+        clearTimeout(watchdog);
+        try {
+          ws.close();
+        } catch (e) {
+          /* noop */
+        }
+      });
+    }
+
+    connectHyperliquid();
   })();
 </script>
 {% endblock %}

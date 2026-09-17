@@ -41,6 +41,14 @@ class UserKey(models.Model):
     def api_secret(self, value):
         self._api_secret = encrypt_value(value)
 
+    @property
+    def encrypted_api_key(self):
+        return self._api_key
+
+    @property
+    def encrypted_api_secret(self):
+        return self._api_secret
+
     def save(self, *args, **kwargs):
         if self._api_key and not self._api_key.startswith("gAAAA"):
             self._api_key = encrypt_value(self._api_key)
@@ -50,6 +58,70 @@ class UserKey(models.Model):
 
     class Meta:
         db_table = "user_keys"
+
+
+class UserHyperLiquidKey(models.Model):
+    user = models.OneToOneField(User, on_delete=models.CASCADE)
+
+    master_wallet_address = models.CharField(max_length=255)
+    api_wallet_address = models.CharField(max_length=255)
+    api_private_key = models.CharField(max_length=255)
+    api_valid_days = models.PositiveIntegerField(default=0)
+
+    is_active = models.BooleanField(default=True)
+
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    def set_master_wallet_address(self, value):
+        self.master_wallet_address = encrypt_value(value)
+
+    def set_api_wallet_address(self, value):
+        self.api_wallet_address = encrypt_value(value)
+
+    def set_api_private_key(self, value):
+        self.api_private_key = encrypt_value(value)
+
+    def get_master_wallet_address(self):
+        return decrypt_value(self.master_wallet_address)
+
+    def get_api_wallet_address(self):
+        return decrypt_value(self.api_wallet_address)
+
+    def get_api_private_key(self):
+        return decrypt_value(self.api_private_key)
+
+    @property
+    def encrypted_master_wallet_address(self):
+        return self.master_wallet_address
+
+    @property
+    def encrypted_api_wallet_address(self):
+        return self.api_wallet_address
+
+    @property
+    def encrypted_api_private_key(self):
+        return self.api_private_key
+
+    def save(self, *args, **kwargs):
+        if self.master_wallet_address and not self.master_wallet_address.startswith(
+            "gAAAA"
+        ):
+            self.master_wallet_address = encrypt_value(self.master_wallet_address)
+
+        if self.api_wallet_address and not self.api_wallet_address.startswith("gAAAA"):
+            self.api_wallet_address = encrypt_value(self.api_wallet_address)
+
+        if self.api_private_key and not self.api_private_key.startswith("gAAAA"):
+            self.api_private_key = encrypt_value(self.api_private_key)
+
+        super().save(*args, **kwargs)
+
+    class Meta:
+        db_table = "user_hyperliquid_keys"
+
+    def __str__(self):
+        return f"{self.user} HyperLiquid Key"
 
 
 class IPAddress(models.Model):

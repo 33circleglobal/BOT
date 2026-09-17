@@ -17,6 +17,7 @@ class SpotOrder(models.Model):
     class ExchangeType(models.TextChoices):
         BINANCE = "BINANCE", "Binance"
         BINANCE_FUTURES = "BINANCE_FUTURES", "Binance Futures"
+        HYPERLIQUID = "HYPERLIQUID", "HyperLiquid"
         OTHER = "OTHER", "Other"
 
     # Core fields

@@ -197,7 +197,7 @@
       <a href="#" class="{% if request.resolver_match.url_name == 'crypto_news_list' %}active{% endif %}">
         <i class="bi bi-calendar2-week"></i><span>News</span><div class="tooltip-custom">News</div>
       </a>
-      <a href="#" class="{% if request.resolver_match.url_name == 'profile' %}active{% endif %}">
+      <a href="{% url 'accounts:profile' %}" class="{% if request.resolver_match.url_name == 'profile' %}active{% endif %}">
         <i class="bi bi-person"></i><span>Profile</span><div class="tooltip-custom">Profile</div>
       </a>
       <a href="{% url 'accounts:logout' %}">

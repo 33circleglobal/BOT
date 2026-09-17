@@ -1,7 +1,8 @@
 from django.shortcuts import render, redirect
 from django.contrib.auth import login, logout, authenticate
 from django.contrib import messages
-from .forms import RegistrationForm, LoginForm
+from .forms import RegistrationForm, LoginForm, UserKeyForm, UserHyperLiquidKeyForm
+from .models import UserKey, UserHyperLiquidKey
 from django.contrib.auth.decorators import login_required
 from django.db.models import (
     Sum,
@@ -18,6 +19,7 @@ from django.db.models import (
 from django.utils import timezone
 from datetime import timedelta, datetime
 from apps.trade.models import SpotOrder, FutureOrder
+from apps.trade.utils.hyperliquid_common import to_hyperliquid_symbol, get_hyperliquid_ws_coin
 import json
 
 
@@ -245,6 +247,103 @@ def logout_view(request):
     return redirect("login")
 
 
+ACTIVE_TRADE_STATUSES = ("OPEN", "POSITION")
+
+
+def _has_active_trades(user):
+    return (
+        SpotOrder.objects.filter(user=user, status__in=ACTIVE_TRADE_STATUSES).exists()
+        or FutureOrder.objects.filter(user=user, status__in=ACTIVE_TRADE_STATUSES).exists()
+    )
+
+
+@login_required
+def profile_view(request):
+    user_key = UserKey.objects.filter(user=request.user).first()
+    hl_key = UserHyperLiquidKey.objects.filter(user=request.user).first()
+    has_active_trades = (
+        user_key is not None or hl_key is not None
+    ) and _has_active_trades(request.user)
+
+    form = None
+    hl_form = None
+
+    if request.method == "POST":
+        action = request.POST.get("action", "save")
+
+        if has_active_trades:
+            messages.error(
+                request,
+                "You have active trades open. Close or wait for them to finish before "
+                "editing or deleting your API keys.",
+            )
+            return redirect("accounts:profile")
+
+        if action == "delete":
+            if user_key:
+                user_key.delete()
+                messages.success(request, "Binance API key deleted.")
+            else:
+                messages.error(request, "No Binance API key to delete.")
+            return redirect("accounts:profile")
+
+        if action == "delete_hyperliquid":
+            if hl_key:
+                hl_key.delete()
+                messages.success(request, "HyperLiquid API key deleted.")
+            else:
+                messages.error(request, "No HyperLiquid API key to delete.")
+            return redirect("accounts:profile")
+
+        if action == "save_hyperliquid":
+            hl_form = UserHyperLiquidKeyForm(request.POST)
+            if hl_form.is_valid():
+                if hl_key is None:
+                    hl_key = UserHyperLiquidKey(user=request.user)
+                hl_key.set_master_wallet_address(
+                    hl_form.cleaned_data["master_wallet_address"]
+                )
+                hl_key.set_api_wallet_address(
+                    hl_form.cleaned_data["api_wallet_address"]
+                )
+                hl_key.set_api_private_key(hl_form.cleaned_data["api_private_key"])
+                hl_key.api_valid_days = hl_form.cleaned_data["api_valid_days"]
+                hl_key.is_active = hl_form.cleaned_data["is_active"]
+                hl_key.save()
+                messages.success(request, "HyperLiquid API key saved.")
+                return redirect("accounts:profile")
+        else:
+            form = UserKeyForm(request.POST)
+            if form.is_valid():
+                if user_key is None:
+                    user_key = UserKey(user=request.user)
+                user_key.api_key = form.cleaned_data["api_key"]
+                user_key.api_secret = form.cleaned_data["api_secret"]
+                user_key.is_active = form.cleaned_data["is_active"]
+                user_key.save()
+                messages.success(request, "Binance API key saved.")
+                return redirect("accounts:profile")
+
+    if form is None:
+        form = UserKeyForm(initial={"is_active": user_key.is_active if user_key else True})
+    if hl_form is None:
+        hl_form = UserHyperLiquidKeyForm(
+            initial={
+                "is_active": hl_key.is_active if hl_key else True,
+                "api_valid_days": hl_key.api_valid_days if hl_key else 0,
+            }
+        )
+
+    context = {
+        "user_key": user_key,
+        "form": form,
+        "hl_key": hl_key,
+        "hl_form": hl_form,
+        "has_active_trades": has_active_trades,
+    }
+    return render(request, "accounts/profile.html", context)
+
+
 @login_required
 def stats_view(request):
     user = request.user
@@ -374,6 +473,18 @@ def history_view(request):
         except Exception:
             pass
 
+    def _exchange_label(o):
+        return "HyperLiquid" if o.exchange == "HYPERLIQUID" else "Binance"
+
+    def _hl_coin(o, market_type):
+        """The "coin" id HyperLiquid's live-PnL websocket subscription (see
+        history.html) needs for this row — resolved and cached by
+        get_hyperliquid_ws_coin."""
+        if o.exchange != "HYPERLIQUID":
+            return ""
+        hl_symbol = to_hyperliquid_symbol(o.symbol, market_type)
+        return get_hyperliquid_ws_coin(hl_symbol)
+
     # Normalize to common dicts and sort
     records = []
     for o in spot_qs.select_related("user")[:2000]:
@@ -385,6 +496,8 @@ def history_view(request):
             {
                 "id": o.id,
                 "market": "Spot",
+                "exchange": _exchange_label(o),
+                "hl_coin": _hl_coin(o, "spot"),
                 "symbol": o.symbol,
                 "direction": o.direction,
                 "status": o.status,
@@ -421,6 +534,8 @@ def history_view(request):
             {
                 "id": o.id,
                 "market": "Futures",
+                "exchange": _exchange_label(o),
+                "hl_coin": _hl_coin(o, "futures"),
                 "symbol": o.symbol,
                 "direction": o.direction,
                 "status": o.status,
@@ -446,22 +561,37 @@ def history_view(request):
 
     CLOSED_STATUSES = ("CLOSED", "CANCELLED", "FAILED")
 
-    def bucket_records(market_name, limit=500):
-        market_records = [r for r in records if r["market"] == market_name][:limit]
+    def bucket_records(market_name, exchange_name, limit=500):
+        market_records = [
+            r
+            for r in records
+            if r["market"] == market_name and r["exchange"] == exchange_name
+        ][:limit]
         return {
             "open": [r for r in market_records if r["status"] == "OPEN"],
             "position": [r for r in market_records if r["status"] == "POSITION"],
             "closed": [r for r in market_records if r["status"] in CLOSED_STATUSES],
         }
 
-    spot_buckets = bucket_records("Spot")
-    fut_buckets = bucket_records("Futures")
+    binance_spot_buckets = bucket_records("Spot", "Binance")
+    binance_fut_buckets = bucket_records("Futures", "Binance")
+    hl_spot_buckets = bucket_records("Spot", "HyperLiquid")
+    hl_fut_buckets = bucket_records("Futures", "HyperLiquid")
+
+    def _total(*buckets):
+        return sum(len(b[k]) for b in buckets for k in ("open", "position", "closed"))
 
     context = {
-        "spot_buckets": spot_buckets,
-        "fut_buckets": fut_buckets,
-        "spot_counts": {k: len(v) for k, v in spot_buckets.items()},
-        "fut_counts": {k: len(v) for k, v in fut_buckets.items()},
+        "spot_buckets": binance_spot_buckets,
+        "fut_buckets": binance_fut_buckets,
+        "spot_counts": {k: len(v) for k, v in binance_spot_buckets.items()},
+        "fut_counts": {k: len(v) for k, v in binance_fut_buckets.items()},
+        "hl_spot_buckets": hl_spot_buckets,
+        "hl_fut_buckets": hl_fut_buckets,
+        "hl_spot_counts": {k: len(v) for k, v in hl_spot_buckets.items()},
+        "hl_fut_counts": {k: len(v) for k, v in hl_fut_buckets.items()},
+        "binance_total": _total(binance_spot_buckets, binance_fut_buckets),
+        "hl_total": _total(hl_spot_buckets, hl_fut_buckets),
         "market": market,
         "status": status_val,
         "symbol": symbol,
