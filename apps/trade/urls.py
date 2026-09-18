@@ -12,12 +12,14 @@ from .views import (
     update_futures_multi_tp,
     risk_settings,
     manual_trade,
+    webhook_logs_view,
 )
 
 app_name = "trading"
 
 urlpatterns = [
     path("webhook/", trading_view_webhook, name="webhook"),
+    path("webhook-logs/", webhook_logs_view, name="webhook_logs"),
     path("futures/update-risk/", update_futures_tp_sl, name="update_futures_tp_sl"),
     path("spot/update-sl/", update_spot_sl, name="update_spot_sl"),
     path("futures/close/", close_futures_order, name="close_futures_order"),

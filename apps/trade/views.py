@@ -14,7 +14,7 @@ from apps.trade.task import (
     handle_futures_signal,
 )
 
-from apps.trade.models import FutureOrder, FutureTakeProfit, TradeSettings
+from apps.trade.models import FutureOrder, FutureTakeProfit, TradeSettings, WebhookLog
 from apps.trade.forms import TradeSettingsForm
 from apps.accounts.models import UserKey
 from apps.trade.utils.common import (
@@ -35,6 +35,9 @@ from apps.trade.utils.refresh_positions_hyperliquid import (
 )
 from apps.trade.models import SpotOrder
 from django.conf import settings
+from django.core.paginator import Paginator
+from django.utils import timezone
+from datetime import datetime
 from decimal import Decimal
 
 
@@ -44,17 +47,31 @@ def trading_view_webhook(request):
         return JsonResponse(
             {"status": "error", "message": "Only POST requests are allowed"}, status=405
         )
+
+    # Logged verbatim before any parsing/processing so every signal is
+    # decodable later even if it's malformed or processing blows up.
+    log = WebhookLog.objects.create(
+        raw_body=request.body.decode("utf-8", errors="replace"),
+        remote_addr=request.META.get("REMOTE_ADDR"),
+    )
+
     try:
         payload = json.loads(request.body)
         print("-------webhook---------")
         print(payload)
         print("-------webhook---------")
 
+        log.payload = payload
+        log.action = str(payload.get("action") or "")
+
         if payload.get("action") == "update_market_risk":
             regime = payload.get("regime")
             futures = payload.get("futures") or {}
             spot = payload.get("spot") or {}
             if not futures and not spot:
+                log.status = WebhookLog.Status.ERROR
+                log.error_message = "Missing futures/spot risk data"
+                log.save()
                 return JsonResponse(
                     {"status": "error", "message": "Missing futures/spot risk data"},
                     status=400,
@@ -68,11 +85,16 @@ def trading_view_webhook(request):
                 if spot:
                     updates["spot_max_positions"] = int(spot.get("max_trades"))
             except (TypeError, ValueError):
+                log.status = WebhookLog.Status.ERROR
+                log.error_message = "Risk values must be integers"
+                log.save()
                 return JsonResponse(
                     {"status": "error", "message": "Risk values must be integers"},
                     status=400,
                 )
             TradeSettings.objects.filter(sync_risk_from_webhook=True).update(**updates)
+            log.status = WebhookLog.Status.PROCESSED
+            log.save()
             return JsonResponse(
                 {"status": "success", "message": f"Market risk updated for regime={regime}"}
             )
@@ -90,7 +112,15 @@ def trading_view_webhook(request):
             else "binance"
         )
 
+        log.symbol = symbol or ""
+        log.side = side or ""
+        log.market = market or ""
+        log.exchange = exchange
+
         if not symbol or side not in ("buy", "sell"):
+            log.status = WebhookLog.Status.ERROR
+            log.error_message = "Missing/invalid params"
+            log.save()
             return JsonResponse(
                 {"status": "error", "message": "Missing/invalid params"}, status=400
             )
@@ -103,11 +133,86 @@ def trading_view_webhook(request):
                 create_order_of_user_controller.delay(side, symbol, market, sl, tp, tps, dca, exchange)
             else:
                 close_order_of_user_controller.delay(side, symbol, market, exchange)
+
+        log.status = WebhookLog.Status.PROCESSED
+        log.save()
         return JsonResponse({"status": "success", "message": "Webhook received"})
     except json.JSONDecodeError:
+        log.status = WebhookLog.Status.ERROR
+        log.error_message = "Invalid JSON payload"
+        log.save()
         return JsonResponse(
             {"status": "error", "message": "Invalid JSON payload"}, status=400
         )
+    except Exception as e:
+        log.status = WebhookLog.Status.ERROR
+        log.error_message = str(e)
+        log.save()
+        raise
+
+
+@login_required
+def webhook_logs_view(request):
+    logs = WebhookLog.objects.all()
+
+    symbol = request.GET.get("symbol", "").strip()
+    status_val = request.GET.get("status", "").strip()
+    date_from = request.GET.get("from", "")
+    date_to = request.GET.get("to", "")
+
+    if symbol:
+        logs = logs.filter(symbol__icontains=symbol)
+    if status_val:
+        logs = logs.filter(status=status_val)
+    if date_from:
+        try:
+            df = datetime.fromisoformat(date_from)
+            df = timezone.make_aware(df) if timezone.is_naive(df) else df
+            logs = logs.filter(created_at__gte=df)
+        except ValueError:
+            pass
+    if date_to:
+        try:
+            dt = datetime.fromisoformat(date_to)
+            dt = timezone.make_aware(dt) if timezone.is_naive(dt) else dt
+            logs = logs.filter(created_at__lte=dt)
+        except ValueError:
+            pass
+
+    paginator = Paginator(logs, 50)
+    page_obj = paginator.get_page(request.GET.get("page"))
+
+    rows = [
+        {
+            "id": log.id,
+            "created_at": log.created_at,
+            "status": log.status,
+            "symbol": log.symbol,
+            "side": log.side,
+            "market": log.market,
+            "exchange": log.exchange,
+            "action": log.action,
+            "error_message": log.error_message,
+            "payload_json": (
+                json.dumps(log.payload, indent=2, default=str)
+                if log.payload is not None
+                else ""
+            ),
+            "raw_body": log.raw_body,
+        }
+        for log in page_obj.object_list
+    ]
+
+    context = {
+        "rows": rows,
+        "page_obj": page_obj,
+        "symbol": symbol,
+        "status": status_val,
+        "date_from": date_from,
+        "date_to": date_to,
+        "status_choices": WebhookLog.Status.choices,
+    }
+    return render(request, "webhook_logs.html", context)
 
 
 @login_required

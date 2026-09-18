@@ -188,6 +188,9 @@
       <a href="{% url 'accounts:history' %}" class="{% if request.resolver_match.url_name == 'history' %}active{% endif %}">
         <i class="bi bi-clock-history"></i><span>History</span><div class="tooltip-custom">History</div>
       </a>
+      <a href="{% url 'trading:webhook_logs' %}" class="{% if request.resolver_match.url_name == 'webhook_logs' %}active{% endif %}">
+        <i class="bi bi-broadcast"></i><span>Webhooks</span><div class="tooltip-custom">Webhooks</div>
+      </a>
       <a href="{% url 'trading:risk_settings' %}" class="{% if request.resolver_match.url_name == 'risk_settings' %}active{% endif %}">
         <i class="bi bi-sliders"></i><span>Risk Settings</span><div class="tooltip-custom">Risk Settings</div>
       </a>

@@ -1,0 +1,144 @@
+{% extends "base.html" %}
+
+{% block content %}
+<div class="container-fluid">
+  <div class="card border-0 shadow-sm mb-3">
+    <div class="card-body">
+      <form class="row g-2 align-items-end" method="get">
+        <div class="col-12 col-md-3">
+          <label class="form-label">Symbol</label>
+          <input name="symbol" value="{{ symbol }}" class="form-control" placeholder="e.g. BTCUSDT"/>
+        </div>
+        <div class="col-12 col-md-3">
+          <label class="form-label">Status</label>
+          <select name="status" class="form-select">
+            <option value="">All</option>
+            {% for value, label in status_choices %}
+              <option value="{{ value }}" {% if status == value %}selected{% endif %}>{{ label }}</option>
+            {% endfor %}
+          </select>
+        </div>
+        <div class="col-12 col-md-3">
+          <label class="form-label">From</label>
+          <input name="from" value="{{ date_from }}" class="form-control" type="datetime-local"/>
+        </div>
+        <div class="col-12 col-md-3">
+          <label class="form-label">To</label>
+          <input name="to" value="{{ date_to }}" class="form-control" type="datetime-local"/>
+        </div>
+        <div class="col-12">
+          <button class="btn btn-primary">Filter</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <div class="card border-0 shadow-sm">
+    <div class="card-body">
+      <div class="table-responsive">
+        <table class="table table-hover table-sm align-middle">
+          <thead>
+            <tr>
+              <th>Time</th>
+              <th>Status</th>
+              <th>Exchange</th>
+              <th>Market</th>
+              <th>Symbol</th>
+              <th>Side</th>
+              <th>Action</th>
+              <th></th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for r in rows %}
+            <tr>
+              <td class="text-nowrap js-local-time" data-utc="{{ r.created_at|date:'c' }}">{{ r.created_at|date:"Y-m-d H:i:s" }}</td>
+              <td>
+                {% if r.status == 'PROCESSED' %}<span class="badge bg-success">{{ r.status }}</span>
+                {% elif r.status == 'ERROR' %}<span class="badge bg-danger">{{ r.status }}</span>
+                {% else %}<span class="badge bg-secondary">{{ r.status }}</span>
+                {% endif %}
+              </td>
+              <td>{{ r.exchange|default:"-" }}</td>
+              <td>{{ r.market|default:"-" }}</td>
+              <td>{{ r.symbol|default:"-" }}</td>
+              <td>{{ r.side|default:"-" }}</td>
+              <td>{{ r.action|default:"-" }}</td>
+              <td>
+                <button type="button" class="btn btn-sm btn-outline-secondary" data-bs-toggle="modal" data-bs-target="#payloadModal{{ r.id }}">
+                  <i class="bi bi-code-slash"></i> View
+                </button>
+              </td>
+            </tr>
+            {% empty %}
+            <tr><td colspan="8" class="text-center text-muted">No webhooks received</td></tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+
+      {% if page_obj.paginator.num_pages > 1 %}
+      <nav>
+        <ul class="pagination pagination-sm mb-0">
+          {% if page_obj.has_previous %}
+            <li class="page-item">
+              <a class="page-link" href="?page={{ page_obj.previous_page_number }}&symbol={{ symbol|urlencode }}&status={{ status|urlencode }}&from={{ date_from|urlencode }}&to={{ date_to|urlencode }}">Previous</a>
+            </li>
+          {% endif %}
+          <li class="page-item disabled"><span class="page-link">Page {{ page_obj.number }} of {{ page_obj.paginator.num_pages }}</span></li>
+          {% if page_obj.has_next %}
+            <li class="page-item">
+              <a class="page-link" href="?page={{ page_obj.next_page_number }}&symbol={{ symbol|urlencode }}&status={{ status|urlencode }}&from={{ date_from|urlencode }}&to={{ date_to|urlencode }}">Next</a>
+            </li>
+          {% endif %}
+        </ul>
+      </nav>
+      {% endif %}
+    </div>
+  </div>
+</div>
+
+{% for r in rows %}
+<div class="modal fade" id="payloadModal{{ r.id }}" tabindex="-1" aria-hidden="true">
+  <div class="modal-dialog modal-lg">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h5 class="modal-title">Webhook Payload <span class="text-muted small">#{{ r.id }}</span></h5>
+        <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+      </div>
+      <div class="modal-body">
+        {% if r.error_message %}
+          <div class="alert alert-danger py-2 small">{{ r.error_message }}</div>
+        {% endif %}
+        {% if r.payload_json %}
+          <pre class="bg-light p-2 small" style="white-space: pre-wrap; word-break: break-all;">{{ r.payload_json }}</pre>
+        {% else %}
+          <p class="text-muted small mb-1">Raw body (not valid JSON):</p>
+          <pre class="bg-light p-2 small" style="white-space: pre-wrap; word-break: break-all;">{{ r.raw_body }}</pre>
+        {% endif %}
+      </div>
+    </div>
+  </div>
+</div>
+{% endfor %}
+
+<script>
+  (function () {
+    function pad(n) {
+      return String(n).padStart(2, "0");
+    }
+    function formatLocal(d) {
+      return (
+        d.getFullYear() + "-" + pad(d.getMonth() + 1) + "-" + pad(d.getDate()) +
+        " " + pad(d.getHours()) + ":" + pad(d.getMinutes()) + ":" + pad(d.getSeconds())
+      );
+    }
+    document.querySelectorAll(".js-local-time").forEach((el) => {
+      const d = new Date(el.dataset.utc);
+      if (isNaN(d.getTime())) return;
+      el.textContent = formatLocal(d);
+      el.title = d.toString();
+    });
+  })();
+</script>
+{% endblock %}
