@@ -217,8 +217,14 @@ def create_hyperliquid_future_order(
                 min_cost = float(
                     ((market_info.get("limits") or {}).get("cost") or {}).get("min") or 0
                 )
-                total_pct = sum(float(t.get("percent") or 0) for t in tps)
-                covers_full_position = total_pct >= 99.9
+                # Each leg's quantity gets rounded independently via
+                # amountToPrecision, so the legs can sum to slightly less
+                # than base_qty — leaving a dust remainder with no TP sized
+                # to close it, or the declared percents might simply not
+                # add up to 100% in the first place. Give the last leg
+                # whatever's actually left instead of its own percent
+                # share, unconditionally, so the position always fully
+                # closes via TPs no matter what the percents were.
                 remaining_qty = base_qty
                 for idx, tp_def in enumerate(tps):
                     try:
@@ -250,7 +256,7 @@ def create_hyperliquid_future_order(
                         )
                         continue
                     is_last = idx == len(tps) - 1
-                    if is_last and covers_full_position:
+                    if is_last:
                         part_qty = max(remaining_qty, 0)
                     else:
                         part_qty = base_qty * (pct / 100.0)

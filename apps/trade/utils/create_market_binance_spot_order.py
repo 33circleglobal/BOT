@@ -140,14 +140,14 @@ def create_binance_spot_order(
                 tp_defs = list(tps) if tps else [{"price": tp, "percent": 100.0}]
 
                 created_tps = []
-                # When the declared percents are meant to cover the whole
-                # position (sum to ~100%), each leg's quantity gets rounded
-                # independently via amountToPrecision, so the legs can sum to
-                # slightly less than base_qty — leaving a dust remainder with
-                # no TP sized to close it. Give the last leg whatever's
-                # actually left instead of its percent share.
-                total_pct = sum(float(t.get("percent") or 0) for t in tp_defs)
-                covers_full_position = total_pct >= 99.9
+                # Each leg's quantity gets rounded independently via
+                # amountToPrecision, so the legs can sum to slightly less
+                # than base_qty — leaving a dust remainder with no TP sized
+                # to close it, or the declared percents might simply not
+                # add up to 100% in the first place. Give the last leg
+                # whatever's actually left instead of its own percent
+                # share, unconditionally, so the position always fully
+                # closes via TPs no matter what the percents were.
                 remaining_qty = base_qty
                 for idx, tp_def in enumerate(tp_defs):
                     try:
@@ -175,7 +175,7 @@ def create_binance_spot_order(
                         )
                         continue
                     is_last = idx == len(tp_defs) - 1
-                    if is_last and covers_full_position:
+                    if is_last:
                         part_qty = max(remaining_qty, 0)
                     else:
                         part_qty = base_qty * (pct / 100.0)
