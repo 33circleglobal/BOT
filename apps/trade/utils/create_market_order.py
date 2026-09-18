@@ -170,22 +170,70 @@ def create_binance_future_order(
             logger.info(f"order: {order}")
 
             inv_side = opposite_side(side)
-            # Validate manual SL/TP against current price to avoid immediate triggers
+            # Validate manual SL/TP against current price to avoid immediate
+            # triggers. The entry order above has already filled — from here
+            # on, invalid input degrades gracefully (fall back to a computed
+            # default SL / skip the TP) instead of raising, since an
+            # uncaught exception at this point would abort the whole
+            # function before the FutureOrder row further below is created,
+            # leaving a real, unprotected position on the exchange
+            # completely untracked on our side.
             cur = float(current_price_of_symbol)
             if sl is not None:
                 s = float(sl)
                 if (side == "buy" and s >= cur) or (side == "sell" and s <= cur):
                     logger.error(
-                        f"[sl] Invalid SL for {symbol}: sl={s}, current={cur}, side={side}"
+                        f"[sl] Invalid SL for {symbol}: sl={s}, current={cur}, side={side}. "
+                        f"Falling back to the computed default SL."
                     )
-                    raise ValueError("Invalid SL relative to current price")
+                    sl = None
             if tp is not None:
                 t = float(tp)
                 if (side == "buy" and t <= cur) or (side == "sell" and t >= cur):
                     logger.error(
-                        f"[tp] Invalid single TP for {symbol}: tp={t}, current={cur}, side={side}"
+                        f"[tp] Invalid single TP for {symbol}: tp={t}, current={cur}, side={side}. "
+                        f"Skipping this TP."
                     )
-                    raise ValueError("Invalid TP relative to current price")
+                    tp = None
+
+            try:
+                order = exchange.fetch_order(order["id"], symbol)
+                logger.info(f"order: {order}")
+            except Exception as e:
+                logger.error(
+                    f"[entry] Could not re-fetch entry order for {symbol}: {e}",
+                    exc_info=True,
+                )
+
+            fee = order.get("fee") or {}
+            entry_fee = fee.get("cost", 0)
+            entry_fee_currency = fee.get("currency", "USDT")
+            total_fee = fee.get("cost", 0)
+            entry_price = order.get("average") or cur
+
+            # Persist the position NOW, before attempting SL/TP, so it is
+            # tracked even if everything below fails. A bad TP price used to
+            # raise all the way past the point where this row used to be
+            # created, leaving a real, live position on Binance (with or
+            # without an SL) completely invisible to our dashboard and
+            # refresh/risk-limit systems. SL fields start out as "no
+            # protection yet" and are updated in place once SL placement
+            # below resolves.
+            fobj = FutureOrder.objects.create(
+                order_id=order["id"],
+                symbol=symbol,
+                direction=position_direction,
+                leverage=leverage,
+                order_quantity=quantity,
+                entry_price=entry_price,
+                entry_fee=entry_fee,
+                entry_fee_currency=entry_fee_currency,
+                total_fee=total_fee,
+                stop_loss_order_id=f"PENDING-{uuid4()}",
+                stop_loss_price=0,
+                stop_loss_status=FutureOrder.TradeStatus.CANCELLED,
+                user=user,
+            )
 
             # Stop loss: optionally disabled via feature flag
             sl_order = None
@@ -199,7 +247,7 @@ def create_binance_future_order(
                 stop_price = (
                     float(sl)
                     if sl is not None
-                    else compute_default_sl(order["average"], side)
+                    else compute_default_sl(entry_price, side)
                 )
                 sl_trigger = float(exchange.priceToPrecision(symbol, stop_price))
                 try:
@@ -220,14 +268,29 @@ def create_binance_future_order(
                     )
                     sl_order = None
 
-            if sl_order is None and not settings.DISABLE_FUTURES_STOP_LOSS:
-                logger.warning(
-                    f"[sl] No SL order was created for {symbol}, user={user.username}. "
-                    f"Position is UNPROTECTED."
-                )
+            if sl_order:
+                # Use sl_trigger (the price we actually sent to Binance) rather
+                # than parsing it back out of the algoOrder ack: Binance echoes
+                # a "price": "0" placeholder for these market-triggered stops,
+                # and that truthy non-empty string was winning the `or` chain
+                # here, silently persisting stop_loss_price=0.
+                fobj.stop_loss_order_id = sl_order["id"]
+                fobj.stop_loss_price = sl_trigger
+                fobj.stop_loss_status = FutureOrder.TradeStatus.POSITION
+            else:
+                fobj.stop_loss_order_id = f"DISABLED-{uuid4()}"
+                fobj.stop_loss_price = 0
+                fobj.stop_loss_status = FutureOrder.TradeStatus.CANCELLED
+                if not settings.DISABLE_FUTURES_STOP_LOSS:
+                    logger.warning(
+                        f"[sl] No SL order was created for {symbol}, user={user.username}. "
+                        f"Position is UNPROTECTED."
+                    )
+            fobj.save(
+                update_fields=["stop_loss_order_id", "stop_loss_price", "stop_loss_status"]
+            )
 
             # Optional single TP or multiple TPs
-            tp_order = None
             created_tps = []
             base_qty = float(quantity)
             if tps:
@@ -266,17 +329,25 @@ def create_binance_future_order(
                             f"[tp] TP #{idx} for {symbol} skipped: percent<=0 ({pct})"
                         )
                         continue
-                    # Validate direction
+                    # Validate direction. A bad price here only invalidates
+                    # this one TP leg — skip it rather than raise, since the
+                    # entry order has already filled and an uncaught
+                    # exception at this point would abort the whole function
+                    # before the FutureOrder row further below is created,
+                    # leaving a real position on the exchange completely
+                    # untracked on our side.
                     if side == "buy" and p <= cur:
                         logger.error(
-                            f"[tp] TP #{idx} for {symbol} invalid: price {p} <= current {cur} for long"
+                            f"[tp] TP #{idx} for {symbol} invalid: price {p} <= current {cur} "
+                            f"for long. Skipping this TP."
                         )
-                        raise ValueError("TP must be above current for long")
+                        continue
                     if side == "sell" and p >= cur:
                         logger.error(
-                            f"[tp] TP #{idx} for {symbol} invalid: price {p} >= current {cur} for short"
+                            f"[tp] TP #{idx} for {symbol} invalid: price {p} >= current {cur} "
+                            f"for short. Skipping this TP."
                         )
-                        raise ValueError("TP must be below current for short")
+                        continue
                     is_last = idx == len(tps) - 1
                     if is_last and covers_full_position:
                         part_qty = max(remaining_qty, 0)
@@ -369,49 +440,6 @@ def create_binance_future_order(
                     f"[tp] No TP orders were created for {symbol}, user={user.username}."
                 )
 
-            fee = order.get("fee") or {}
-            entry_fee = fee.get("cost", 0)
-            entry_fee_currency = fee.get("currency", "USDT")
-            total_fee = fee.get("cost", 0)
-
-            # Capture SL info when enabled; otherwise mark as cancelled with a unique placeholder id
-            if sl_order:
-                # Use sl_trigger (the price we actually sent to Binance) rather
-                # than parsing it back out of the algoOrder ack: Binance echoes
-                # a "price": "0" placeholder for these market-triggered stops,
-                # and that truthy non-empty string was winning the `or` chain
-                # here, silently persisting stop_loss_price=0.
-                stop_loss_price = sl_trigger
-                sl_id = sl_order["id"]
-                sl_status = FutureOrder.TradeStatus.POSITION
-            else:
-                stop_loss_price = 0
-                sl_id = f"DISABLED-{uuid4()}"
-                sl_status = FutureOrder.TradeStatus.CANCELLED
-
-            order = exchange.fetch_order(
-                order["id"],
-                symbol,
-            )
-
-            logger.info(f"order: {order}")
-
-            fobj = FutureOrder.objects.create(
-                order_id=order["id"],
-                symbol=symbol,
-                direction=position_direction,
-                leverage=leverage,
-                order_quantity=quantity,
-                entry_price=order["average"],
-                entry_fee=entry_fee,
-                entry_fee_currency=entry_fee_currency,
-                total_fee=total_fee,
-                stop_loss_order_id=sl_id,
-                stop_loss_price=stop_loss_price,
-                stop_loss_status=sl_status,
-                user=user,
-            )
-
             # Persist multiple TP children if any
             if created_tps:
                 for item in created_tps:
@@ -426,7 +454,8 @@ def create_binance_future_order(
 
             logger.info(
                 f"[summary] {symbol} order {fobj.order_id} created for {user.username}: "
-                f"sl_status={sl_status}, sl_id={sl_id}, tps_created={len(created_tps)}"
+                f"sl_status={fobj.stop_loss_status}, sl_id={fobj.stop_loss_order_id}, "
+                f"tps_created={len(created_tps)}"
             )
 
             return True

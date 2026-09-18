@@ -178,10 +178,16 @@ def create_hyperliquid_spot_order(
                         )
                         continue
                     if p <= cur:
+                        # Skip just this leg rather than raise — the order
+                        # row is already persisted above, and an uncaught
+                        # exception here would abort the remaining TPs plus
+                        # the SL/DCA placement below for an otherwise-fine
+                        # position.
                         logger.error(
-                            f"[tp] Spot TP #{idx} for {symbol} invalid: price {p} <= current {cur}"
+                            f"[tp] Spot TP #{idx} for {symbol} invalid: price {p} <= current {cur}. "
+                            f"Skipping this TP."
                         )
-                        raise ValueError("TP must be above current price for a spot long")
+                        continue
                     is_last = idx == len(tp_defs) - 1
                     if is_last and covers_full_position:
                         part_qty = max(remaining_qty, 0)
