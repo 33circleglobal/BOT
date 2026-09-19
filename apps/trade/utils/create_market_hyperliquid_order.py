@@ -72,14 +72,20 @@ def create_hyperliquid_future_order(
                 logger.error(f"Could not fetch current price for {symbol}")
                 return False
 
-            balance = exchange.fetch_balance(params={"type": "swap"})
+            # marginMode is passed here too: under isolated margin, ccxt maps
+            # this account's "withdrawable" (the true balance available to
+            # commit to a new isolated position) into `free` — without it,
+            # `free` falls back to accountValue - totalMarginUsed, which is
+            # the cross-margin approximation and can overstate what's
+            # actually free to allocate in isolation.
+            balance = exchange.fetch_balance(params={"type": "swap", "marginMode": "isolated"})
             user_balance = float((balance.get("free") or {}).get("USDC") or 0)
 
             user_usable_balance = (user_balance * position / 100) * leverage
             quantity = user_usable_balance / current_price_of_symbol
             quantity = exchange.amountToPrecision(symbol, quantity)
 
-            exchange.set_leverage(leverage, symbol, params={"marginMode": "cross"})
+            exchange.set_leverage(leverage, symbol, params={"marginMode": "isolated"})
 
             order = exchange.create_order(
                 symbol=symbol,
