@@ -48,14 +48,14 @@
               <div class="alert alert-danger py-2 px-3 mb-0 w-100">
                 <strong>Market data is stale</strong> &mdash; new trades are currently blocked.
                 {% if settings_obj.last_market_risk_update %}
-                  Last update: {{ settings_obj.last_market_risk_update }}.
+                  Last update: <span class="js-local-time" data-utc="{{ settings_obj.last_market_risk_update|date:'c' }}">{{ settings_obj.last_market_risk_update }}</span>.
                 {% else %}
                   No webhook update has ever been received yet.
                 {% endif %}
               </div>
             {% else %}
               <div class="alert alert-success py-2 px-3 mb-0 w-100">
-                Market data is fresh. Last update: {{ settings_obj.last_market_risk_update }}.
+                Market data is fresh. Last update: <span class="js-local-time" data-utc="{{ settings_obj.last_market_risk_update|date:'c' }}">{{ settings_obj.last_market_risk_update }}</span>.
               </div>
             {% endif %}
           {% endif %}
@@ -123,4 +123,23 @@
     </div>
   </div>
 </div>
+<script>
+  (function () {
+    function pad(n) {
+      return String(n).padStart(2, "0");
+    }
+    function formatLocal(d) {
+      return (
+        d.getFullYear() + "-" + pad(d.getMonth() + 1) + "-" + pad(d.getDate()) +
+        " " + pad(d.getHours()) + ":" + pad(d.getMinutes()) + ":" + pad(d.getSeconds())
+      );
+    }
+    document.querySelectorAll(".js-local-time").forEach((el) => {
+      const d = new Date(el.dataset.utc);
+      if (isNaN(d.getTime())) return;
+      el.textContent = formatLocal(d);
+      el.title = d.toString();
+    });
+  })();
+</script>
 {% endblock %}

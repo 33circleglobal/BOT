@@ -68,6 +68,19 @@ def trading_view_webhook(request):
             regime = payload.get("regime")
             futures = payload.get("futures") or {}
             spot = payload.get("spot") or {}
+
+            # Stamped as soon as we know this is a live "update_market_risk"
+            # call — before any validation of the individual numbers below —
+            # so `is_market_data_stale` reflects whether the webhook feed
+            # itself is alive, not whether this particular payload happened
+            # to parse cleanly. A malformed field (bad type, missing key)
+            # shouldn't ALSO leave the bot thinking the feed went silent on
+            # top of whatever the actual payload problem is; see
+            # TradeSettings.is_market_data_stale.
+            TradeSettings.objects.filter(sync_risk_from_webhook=True).update(
+                last_market_risk_update=timezone.now()
+            )
+
             if not futures and not spot:
                 log.status = WebhookLog.Status.ERROR
                 log.error_message = "Missing futures/spot risk data"
@@ -92,11 +105,6 @@ def trading_view_webhook(request):
                     {"status": "error", "message": "Risk values must be integers"},
                     status=400,
                 )
-            # Stamped on every successful call (even one that only refreshes
-            # the regime with unchanged numbers) so `is_market_data_stale`
-            # can tell a live feed apart from one that silently stopped
-            # calling in — see TradeSettings.is_market_data_stale.
-            updates["last_market_risk_update"] = timezone.now()
             TradeSettings.objects.filter(sync_risk_from_webhook=True).update(**updates)
             log.status = WebhookLog.Status.PROCESSED
             log.save()
