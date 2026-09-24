@@ -24,4 +24,8 @@ app.conf.beat_schedule = {
         "task": "apps.trade.task.refresh_all_spot_positions",
         "schedule": 300.0,
     },
+    "refresh-hyperliquid-public-markets-every-4-min": {
+        "task": "apps.trade.task.refresh_hyperliquid_public_markets",
+        "schedule": 240.0,
+    },
 }

@@ -290,149 +290,27 @@ def create_binance_future_order(
                 update_fields=["stop_loss_order_id", "stop_loss_price", "stop_loss_status"]
             )
 
-            # Optional single TP or multiple TPs
+            # Optional single TP or multiple TPs. Everything in this section
+            # is wrapped in its own try/except: entry + SL are already live
+            # on the exchange and fobj is already persisted above, so an
+            # uncaught exception here must NOT be allowed to propagate out
+            # of the user_trade_open_lock() atomic block — that would roll
+            # back the FutureOrder row and SL fields we just committed,
+            # leaving a real, live, unprotected-looking position on the
+            # exchange with no DB record at all (see git history for an
+            # incident where exactly this happened).
             created_tps = []
-            base_qty = float(quantity)
-            if tps:
-                logger.info(
-                    f"[tp] Processing {len(tps)} TP definitions for {symbol}: {tps}"
+            try:
+                created_tps = _create_futures_take_profits(
+                    exchange, symbol, side, inv_side, quantity, tps, tp, cur
                 )
-                # tps expected as list of dicts: {"price": float, "percent": float}
-                market_info = exchange.market(symbol)
-                min_amount = float(
-                    (market_info.get("limits") or {}).get("amount", {}).get("min") or 0
+            except Exception as e:
+                logger.error(
+                    f"[tp] Unexpected error processing TPs for {symbol}, "
+                    f"user={user.username}: {e}",
+                    exc_info=True,
                 )
-                min_cost = float(
-                    (market_info.get("limits") or {}).get("cost", {}).get("min") or 0
-                )
-                # Each leg's quantity gets rounded independently via
-                # amountToPrecision, so the legs can sum to slightly less
-                # than base_qty — leaving a dust remainder (e.g. 0.1-0.2)
-                # with no TP sized to close it, or the declared percents
-                # might simply not add up to 100% in the first place. Give
-                # the last leg whatever's actually left instead of its own
-                # percent share, unconditionally, so the position always
-                # fully closes via TPs no matter what the percents were.
-                remaining_qty = base_qty
-                for idx, tp_def in enumerate(tps):
-                    try:
-                        p = float(tp_def.get("price"))
-                        pct = float(tp_def.get("percent"))
-                    except Exception as e:
-                        logger.error(
-                            f"[tp] TP #{idx} for {symbol} has invalid price/percent: {tp_def} ({e})"
-                        )
-                        continue
-                    if pct <= 0:
-                        logger.warning(
-                            f"[tp] TP #{idx} for {symbol} skipped: percent<=0 ({pct})"
-                        )
-                        continue
-                    # Validate direction. A bad price here only invalidates
-                    # this one TP leg — skip it rather than raise, since the
-                    # entry order has already filled and an uncaught
-                    # exception at this point would abort the whole function
-                    # before the FutureOrder row further below is created,
-                    # leaving a real position on the exchange completely
-                    # untracked on our side.
-                    if side == "buy" and p <= cur:
-                        logger.error(
-                            f"[tp] TP #{idx} for {symbol} invalid: price {p} <= current {cur} "
-                            f"for long. Skipping this TP."
-                        )
-                        continue
-                    if side == "sell" and p >= cur:
-                        logger.error(
-                            f"[tp] TP #{idx} for {symbol} invalid: price {p} >= current {cur} "
-                            f"for short. Skipping this TP."
-                        )
-                        continue
-                    is_last = idx == len(tps) - 1
-                    if is_last:
-                        part_qty = max(remaining_qty, 0)
-                    else:
-                        part_qty = base_qty * (pct / 100.0)
-                    part_qty_p = float(exchange.amountToPrecision(symbol, part_qty))
-                    stop_p = float(exchange.priceToPrecision(symbol, p))
-                    if part_qty_p <= 0:
-                        logger.warning(
-                            f"[tp] TP #{idx} for {symbol} skipped: rounded qty is 0 "
-                            f"(base_qty={base_qty}, pct={pct})"
-                        )
-                        continue
-                    if min_amount and part_qty_p < min_amount:
-                        logger.warning(
-                            f"[tp] TP #{idx} for {symbol} skipped: qty {part_qty_p} "
-                            f"below exchange min_amount {min_amount}"
-                        )
-                        continue
-                    if min_cost and (part_qty_p * stop_p) < min_cost:
-                        logger.warning(
-                            f"[tp] TP #{idx} for {symbol} skipped: notional "
-                            f"{part_qty_p * stop_p} below exchange min_cost {min_cost}"
-                        )
-                        continue
-                    try:
-                        tp_o = create_algo_order(
-                            exchange,
-                            symbol,
-                            inv_side,
-                            "TAKE_PROFIT_MARKET",
-                            part_qty_p,
-                            trigger_price=stop_p,
-                            reduce_only=True,
-                        )
-                        created_tps.append(
-                            {
-                                "id": tp_o.get("id", ""),
-                                "price": stop_p,
-                                "percent": pct,
-                                "qty": part_qty_p,
-                            }
-                        )
-                        remaining_qty -= part_qty_p
-                    except Exception as e:
-                        logger.error(
-                            f"[tp] TP #{idx} for {symbol} FAILED to place "
-                            f"(price={stop_p}, qty={part_qty_p}): {e}",
-                            exc_info=True,
-                        )
-                        continue
-
-                if len(created_tps) < len(
-                    [t for t in tps if float(t.get("percent") or 0) > 0]
-                ):
-                    logger.warning(
-                        f"[tp] {symbol}: only {len(created_tps)}/{len(tps)} TP orders "
-                        f"were actually created. Check preceding log lines for skips/failures."
-                    )
-            elif tp is not None:
-                # Map single TP to a child TP covering 100%
-                tp_price = float(exchange.priceToPrecision(symbol, float(tp)))
-                try:
-                    tp_o = create_algo_order(
-                        exchange,
-                        symbol,
-                        inv_side,
-                        "TAKE_PROFIT_MARKET",
-                        quantity,
-                        trigger_price=tp_price,
-                        reduce_only=True,
-                    )
-                    created_tps.append(
-                        {
-                            "id": tp_o.get("id", ""),
-                            "price": tp_price,
-                            "percent": 100.0,
-                            "qty": float(quantity),
-                        }
-                    )
-                except Exception as e:
-                    logger.error(
-                        f"[tp] Single TP for {symbol} FAILED to place "
-                        f"(price={tp_price}, qty={quantity}): {e}",
-                        exc_info=True,
-                    )
+                created_tps = []
 
             if not created_tps:
                 logger.warning(
@@ -440,16 +318,23 @@ def create_binance_future_order(
                 )
 
             # Persist multiple TP children if any
-            if created_tps:
-                for item in created_tps:
-                    FutureTakeProfit.objects.create(
-                        order=fobj,
-                        tp_order_id=item["id"],
-                        price=item["price"],
-                        percent=item["percent"],
-                        quantity=item["qty"],
-                        status=FutureTakeProfit.TradeStatus.POSITION,
-                    )
+            try:
+                if created_tps:
+                    for item in created_tps:
+                        FutureTakeProfit.objects.create(
+                            order=fobj,
+                            tp_order_id=item["id"],
+                            price=item["price"],
+                            percent=item["percent"],
+                            quantity=item["qty"],
+                            status=FutureTakeProfit.TradeStatus.POSITION,
+                        )
+            except Exception as e:
+                logger.error(
+                    f"[tp] Error persisting FutureTakeProfit rows for {symbol}, "
+                    f"user={user.username}: {e}",
+                    exc_info=True,
+                )
 
             logger.info(
                 f"[summary] {symbol} order {fobj.order_id} created for {user.username}: "
@@ -464,3 +349,150 @@ def create_binance_future_order(
             f"Error creating futures order for {user.username}: {e}", exc_info=True
         )
         return False
+
+
+def _create_futures_take_profits(exchange, symbol, side, inv_side, quantity, tps, tp, cur):
+    """Places TP algo orders for create_binance_future_order and returns the
+    list of successfully-created legs as dicts. Raises on unexpected errors
+    from shared setup (e.g. exchange.market(symbol)); per-leg placement
+    errors are caught and logged, skipping just that leg."""
+    created_tps = []
+    base_qty = float(quantity)
+    if tps:
+        logger.info(f"[tp] Processing {len(tps)} TP definitions for {symbol}: {tps}")
+        # tps expected as list of dicts: {"price": float, "percent": float}
+        market_info = exchange.market(symbol)
+        min_amount = float(
+            (market_info.get("limits") or {}).get("amount", {}).get("min") or 0
+        )
+        min_cost = float(
+            (market_info.get("limits") or {}).get("cost", {}).get("min") or 0
+        )
+        # Each leg's quantity gets rounded independently via
+        # amountToPrecision, so the legs can sum to slightly less than
+        # base_qty — leaving a dust remainder (e.g. 0.1-0.2) with no TP
+        # sized to close it, or the declared percents might simply not add
+        # up to 100% in the first place. Give the last leg whatever's
+        # actually left instead of its own percent share, unconditionally,
+        # so the position always fully closes via TPs no matter what the
+        # percents were.
+        remaining_qty = base_qty
+        for idx, tp_def in enumerate(tps):
+            try:
+                p = float(tp_def.get("price"))
+                pct = float(tp_def.get("percent"))
+            except Exception as e:
+                logger.error(
+                    f"[tp] TP #{idx} for {symbol} has invalid price/percent: {tp_def} ({e})"
+                )
+                continue
+            if pct <= 0:
+                logger.warning(f"[tp] TP #{idx} for {symbol} skipped: percent<=0 ({pct})")
+                continue
+            # Validate direction. A bad price here only invalidates this one
+            # TP leg — skip it rather than raise.
+            if side == "buy" and p <= cur:
+                logger.error(
+                    f"[tp] TP #{idx} for {symbol} invalid: price {p} <= current {cur} "
+                    f"for long. Skipping this TP."
+                )
+                continue
+            if side == "sell" and p >= cur:
+                logger.error(
+                    f"[tp] TP #{idx} for {symbol} invalid: price {p} >= current {cur} "
+                    f"for short. Skipping this TP."
+                )
+                continue
+            is_last = idx == len(tps) - 1
+            if is_last:
+                part_qty = max(remaining_qty, 0)
+            else:
+                part_qty = base_qty * (pct / 100.0)
+            try:
+                part_qty_p = float(exchange.amountToPrecision(symbol, part_qty))
+                stop_p = float(exchange.priceToPrecision(symbol, p))
+            except Exception as e:
+                logger.error(
+                    f"[tp] TP #{idx} for {symbol} skipped: amount/price precision "
+                    f"conversion failed (qty={part_qty}, price={p}): {e}",
+                    exc_info=True,
+                )
+                continue
+            if part_qty_p <= 0:
+                logger.warning(
+                    f"[tp] TP #{idx} for {symbol} skipped: rounded qty is 0 "
+                    f"(base_qty={base_qty}, pct={pct})"
+                )
+                continue
+            if min_amount and part_qty_p < min_amount:
+                logger.warning(
+                    f"[tp] TP #{idx} for {symbol} skipped: qty {part_qty_p} "
+                    f"below exchange min_amount {min_amount}"
+                )
+                continue
+            if min_cost and (part_qty_p * stop_p) < min_cost:
+                logger.warning(
+                    f"[tp] TP #{idx} for {symbol} skipped: notional "
+                    f"{part_qty_p * stop_p} below exchange min_cost {min_cost}"
+                )
+                continue
+            try:
+                tp_o = create_algo_order(
+                    exchange,
+                    symbol,
+                    inv_side,
+                    "TAKE_PROFIT_MARKET",
+                    part_qty_p,
+                    trigger_price=stop_p,
+                    reduce_only=True,
+                )
+                created_tps.append(
+                    {
+                        "id": tp_o.get("id", ""),
+                        "price": stop_p,
+                        "percent": pct,
+                        "qty": part_qty_p,
+                    }
+                )
+                remaining_qty -= part_qty_p
+            except Exception as e:
+                logger.error(
+                    f"[tp] TP #{idx} for {symbol} FAILED to place "
+                    f"(price={stop_p}, qty={part_qty_p}): {e}",
+                    exc_info=True,
+                )
+                continue
+
+        if len(created_tps) < len([t for t in tps if float(t.get("percent") or 0) > 0]):
+            logger.warning(
+                f"[tp] {symbol}: only {len(created_tps)}/{len(tps)} TP orders "
+                f"were actually created. Check preceding log lines for skips/failures."
+            )
+    elif tp is not None:
+        # Map single TP to a child TP covering 100%
+        try:
+            tp_price = float(exchange.priceToPrecision(symbol, float(tp)))
+            tp_o = create_algo_order(
+                exchange,
+                symbol,
+                inv_side,
+                "TAKE_PROFIT_MARKET",
+                quantity,
+                trigger_price=tp_price,
+                reduce_only=True,
+            )
+            created_tps.append(
+                {
+                    "id": tp_o.get("id", ""),
+                    "price": tp_price,
+                    "percent": 100.0,
+                    "qty": float(quantity),
+                }
+            )
+        except Exception as e:
+            logger.error(
+                f"[tp] Single TP for {symbol} FAILED to place: {e}",
+                exc_info=True,
+            )
+
+    return created_tps

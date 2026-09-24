@@ -266,18 +266,31 @@ _PUBLIC_MARKETS_CACHE_KEY = "hyperliquid:public_markets"
 _PUBLIC_MARKETS_CACHE_TTL = 300  # seconds
 
 
-def get_public_hyperliquid_markets():
+def get_public_hyperliquid_markets(force_refresh=False):
     """Public (credential-less) HyperLiquid market metadata, cached for a
     few minutes so callers don't hit HyperLiquid's API on every request —
     used to resolve the exact "coin" identifier HyperLiquid's realtime
     websocket feed expects for a given unified symbol (see
     get_hyperliquid_ws_coin below).
-    """
-    cached = cache.get(_PUBLIC_MARKETS_CACHE_KEY)
-    if cached is not None:
-        return cached
 
-    exchange = ccxt.hyperliquid({"enableRateLimit": True, "timeout": 10000})
+    Only loads "spot"/"swap" markets — NOT "hip3" (builder-deployed DEX
+    markets, which none of our users trade). ccxt's default load_markets()
+    also fetches hip3 markets, which costs an extra "perpDexs" call plus up
+    to 10 more sequential HTTP round-trips (one per DEX); chained together,
+    those can individually stay under the per-request timeout yet still add
+    up to more than gunicorn's worker timeout, killing the worker mid
+    request (this took down /history/ in prod once — see git history).
+    """
+    if not force_refresh:
+        cached = cache.get(_PUBLIC_MARKETS_CACHE_KEY)
+        if cached is not None:
+            return cached
+
+    exchange = ccxt.hyperliquid({
+        "enableRateLimit": True,
+        "timeout": 5000,
+        "options": {"fetchMarkets": {"types": ["spot", "swap"]}},
+    })
     exchange.load_markets()
     markets = {
         symbol: {

@@ -18,6 +18,7 @@ from apps.trade.utils.refresh_positions_hyperliquid import (
     refresh_hyperliquid_futures_order,
     refresh_hyperliquid_spot_order,
 )
+from apps.trade.utils.hyperliquid_common import get_public_hyperliquid_markets
 
 import logging
 
@@ -248,6 +249,18 @@ def refresh_single_spot_position(self, order_id):
     except Exception as e:
         logger.error(f"Error refreshing spot order {order_id}: {e}")
         raise self.retry(exc=e)
+
+
+# --- Periodic HyperLiquid public-markets cache warm (celery beat, every 4 min) --
+@celery_app.task(bind=True)
+def refresh_hyperliquid_public_markets(self):
+    """Keeps the get_public_hyperliquid_markets() cache (5 min TTL) warm so
+    request-serving views (e.g. history_view) never have to make the live
+    HyperLiquid API call themselves and risk blocking a sync worker on it."""
+    try:
+        get_public_hyperliquid_markets(force_refresh=True)
+    except Exception as e:
+        logger.warning(f"Error refreshing HyperLiquid public markets cache: {e}")
 
 
 # --- Legacy compatibility tasks -------------------------------------------------
