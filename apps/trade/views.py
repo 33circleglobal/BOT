@@ -92,6 +92,11 @@ def trading_view_webhook(request):
                     {"status": "error", "message": "Risk values must be integers"},
                     status=400,
                 )
+            # Stamped on every successful call (even one that only refreshes
+            # the regime with unchanged numbers) so `is_market_data_stale`
+            # can tell a live feed apart from one that silently stopped
+            # calling in — see TradeSettings.is_market_data_stale.
+            updates["last_market_risk_update"] = timezone.now()
             TradeSettings.objects.filter(sync_risk_from_webhook=True).update(**updates)
             log.status = WebhookLog.Status.PROCESSED
             log.save()
@@ -704,7 +709,15 @@ def risk_settings(request):
             return redirect("trading:risk_settings")
     else:
         form = TradeSettingsForm(instance=settings_obj)
-    return render(request, "risk_settings.html", {"form": form})
+    return render(
+        request,
+        "risk_settings.html",
+        {
+            "form": form,
+            "settings_obj": settings_obj,
+            "market_data_stale": settings_obj.is_market_data_stale(),
+        },
+    )
 
 
 @login_required

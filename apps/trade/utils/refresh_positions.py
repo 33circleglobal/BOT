@@ -5,6 +5,7 @@ from apps.trade.utils.common import (
     make_spot_exchange,
     opposite_side,
     compute_default_sl,
+    split_spot_order_fees,
 )
 from apps.trade.utils.close_order import cancel_algo_order
 from apps.trade.utils.create_market_order import create_algo_order
@@ -302,12 +303,26 @@ def refresh_spot_order(order: SpotOrder) -> bool:
                 old_qty = Decimal(str(order.order_quantity or 0))
                 old_final = Decimal(str(order.final_quantity or order.order_quantity or 0))
                 old_price = Decimal(str(order.entry_price))
-                dca_qty = Decimal(str(order.dca_quantity or 0))
+                # executedQty (ccxt: filled) is Binance's authoritative gross
+                # fill amount for this leg — prefer it over the amount we
+                # originally requested (order.dca_quantity), which won't match
+                # e.g. after any exchange-side precision adjustment.
+                dca_qty = Decimal(
+                    str(dca_info.get("filled") or order.dca_quantity or 0)
+                )
                 dca_fill_price = Decimal(
                     str(dca_info.get("average") or dca_info.get("price") or order.dca_price)
                 )
-                fee = dca_info.get("fee") or {}
-                dca_fee_cost = Decimal(str(fee.get("cost", 0))) if fee else Decimal("0")
+
+                base_asset, quote_asset = symbol.split("/")[0], symbol.split("/")[1]
+                base_asset_fee, fee_value_in_quote = split_spot_order_fees(
+                    dca_info, base_asset, quote_asset, float(dca_fill_price)
+                )
+                # Only a commission actually charged in the base asset reduces
+                # the base-asset balance received — a quote/BNB commission
+                # comes out of a different balance and must not be subtracted
+                # from the sellable quantity here.
+                dca_base_fee = Decimal(str(base_asset_fee))
 
                 new_qty = old_qty + dca_qty
                 new_avg = (
@@ -315,14 +330,14 @@ def refresh_spot_order(order: SpotOrder) -> bool:
                     if new_qty
                     else old_price
                 )
-                new_final = old_final + dca_qty - dca_fee_cost
+                new_final = old_final + dca_qty - dca_base_fee
 
                 order.order_quantity = new_qty
                 order.entry_price = new_avg
                 order.final_quantity = new_final
                 order.dca_status = SpotOrder.TradeStatus.CLOSED
-                if dca_fee_cost:
-                    order.total_fee = float(order.total_fee or 0) + float(dca_fee_cost)
+                if fee_value_in_quote:
+                    order.total_fee = float(order.total_fee or 0) + float(fee_value_in_quote)
 
                 # Resize every still-open TP leg to the new total quantity,
                 # preserving each leg's original percent share. Binance

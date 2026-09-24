@@ -15,6 +15,7 @@ class TradeSettingsForm(forms.ModelForm):
             "spot_max_positions",
             "spot_position_pct",
             "sync_risk_from_webhook",
+            "max_market_data_age_minutes",
         ]
         widgets = {
             "futures_max_positions": forms.NumberInput(
@@ -41,6 +42,9 @@ class TradeSettingsForm(forms.ModelForm):
             "sync_risk_from_webhook": forms.CheckboxInput(
                 attrs={"class": "form-check-input"}
             ),
+            "max_market_data_age_minutes": forms.NumberInput(
+                attrs={"class": "form-control", "min": 1, "max": 1440}
+            ),
         }
         labels = {
             "futures_max_positions": "Max total futures trades (open at once)",
@@ -51,6 +55,7 @@ class TradeSettingsForm(forms.ModelForm):
             "spot_max_positions": "Max total spot trades (open at once)",
             "spot_position_pct": "Spot position size (% of available balance per trade)",
             "sync_risk_from_webhook": "Auto-update these limits from the market-regime webhook",
+            "max_market_data_age_minutes": "Stop opening new trades if no webhook update arrives within (minutes)",
         }
 
     def clean(self):

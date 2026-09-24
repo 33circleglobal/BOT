@@ -4,6 +4,7 @@ from apps.trade.utils.common import (
     make_spot_exchange,
     get_symbol_last_price,
     compute_default_sl,
+    split_spot_order_fees,
 )
 from apps.trade.utils.risk_guard import can_open_spot_position
 from apps.trade.utils.locks import user_trade_open_lock
@@ -98,11 +99,30 @@ def create_binance_spot_order(
                 symbol=symbol, side=side, type="market", amount=quantity
             )
 
-            # Extract detailed fee information
-            fee_details = {
-                "cost": order["fee"]["cost"],
-                "currency": order["fee"]["currency"],
-            }
+            # Binance's executedQty (ccxt: order['filled']) is the authoritative
+            # gross fill amount — prefer it over the amount we requested, which
+            # can differ slightly after exchange-side precision/slippage.
+            executed_qty = float(order.get("filled") or 0) or quantity
+
+            base_asset, quote_asset = symbol.split("/")[0], symbol.split("/")[1]
+            avg_price = float(order["average"])
+            base_asset_fee, fee_value_in_quote = split_spot_order_fees(
+                order, base_asset, quote_asset, avg_price
+            )
+            # Only a commission actually charged in the base asset reduces the
+            # base-asset balance we end up holding — a quote/BNB commission is
+            # paid out of a different balance and must not be subtracted here.
+            final_qty = executed_qty - base_asset_fee
+
+            # Keep the single-fee fields best-effort for display purposes; when
+            # commissions were split across multiple assets there's no single
+            # (cost, currency) pair to report, so fall back to the base-asset
+            # portion (0 if none was charged in the base asset).
+            fee_info = order.get("fee") or {}
+            entry_fee_cost = float(fee_info.get("cost") or base_asset_fee)
+            entry_fee_currency = fee_info.get("currency") or (
+                base_asset if base_asset_fee else quote_asset
+            )
 
             position_direction = (
                 SpotOrder.TradeDirection.LONG
@@ -114,11 +134,11 @@ def create_binance_spot_order(
                 order_id=order["id"],
                 entry_price=order["average"],
                 direction=position_direction,
-                order_quantity=quantity,
-                final_quantity=float(quantity) - float(fee_details["cost"]),
-                entry_fee=fee_details["cost"],
-                entry_fee_currency=fee_details["currency"],
-                total_fee=float(order["average"]) * fee_details["cost"],
+                order_quantity=executed_qty,
+                final_quantity=final_qty,
+                entry_fee=entry_fee_cost,
+                entry_fee_currency=entry_fee_currency,
+                total_fee=fee_value_in_quote,
                 symbol=symbol,
                 is_spot=True,
                 total_cost=notional_value,
@@ -331,8 +351,9 @@ def create_binance_spot_order(
 
             logger.info(
                 f"Spot {side} order created for {user.username}: "
-                f"{quantity} {symbol} at {order['average']}. "
-                f"Fee: {fee_details['cost']} {fee_details['currency']}"
+                f"{executed_qty} {symbol} at {order['average']} "
+                f"(final_quantity={final_qty}). "
+                f"Fee: {entry_fee_cost} {entry_fee_currency}"
             )
             return True
 

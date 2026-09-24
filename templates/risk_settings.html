@@ -27,6 +27,40 @@
             <div class="text-danger small">{{ error }}</div>
           {% endfor %}
         </div>
+
+        <div class="col-12 col-md-6">
+          <label class="form-label">{{ form.max_market_data_age_minutes.label }}</label>
+          {{ form.max_market_data_age_minutes }}
+          <div class="form-text">
+            Only matters while "{{ form.sync_risk_from_webhook.label }}" is on. If the
+            market-regime webhook goes quiet for longer than this, new trades are blocked
+            bot-wide until it resumes — this is what stops the bot from opening trades on a
+            regime setting (bull/bear) that's gone stale because the webhook sender failed.
+            Existing open positions are never touched by this.
+          </div>
+          {% for error in form.max_market_data_age_minutes.errors %}
+            <div class="text-danger small">{{ error }}</div>
+          {% endfor %}
+        </div>
+        <div class="col-12 col-md-6 d-flex align-items-end">
+          {% if settings_obj.sync_risk_from_webhook %}
+            {% if market_data_stale %}
+              <div class="alert alert-danger py-2 px-3 mb-0 w-100">
+                <strong>Market data is stale</strong> &mdash; new trades are currently blocked.
+                {% if settings_obj.last_market_risk_update %}
+                  Last update: {{ settings_obj.last_market_risk_update }}.
+                {% else %}
+                  No webhook update has ever been received yet.
+                {% endif %}
+              </div>
+            {% else %}
+              <div class="alert alert-success py-2 px-3 mb-0 w-100">
+                Market data is fresh. Last update: {{ settings_obj.last_market_risk_update }}.
+              </div>
+            {% endif %}
+          {% endif %}
+        </div>
+
         <div class="col-12"><h6 class="text-uppercase text-muted small mt-2">Futures</h6></div>
         <div class="col-12 col-md-4">
           <label class="form-label">{{ form.futures_max_positions.label }}</label>

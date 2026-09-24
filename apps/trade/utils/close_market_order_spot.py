@@ -89,20 +89,31 @@ def quick_close_spot_position(order: SpotOrder, user: User):
         if quantity <= 0:
             quantity = full_quantity
 
-        # Some TPs may already have filled before this close (reducing what's
-        # actually held) — cap by the real free balance rather than assuming
-        # the full remaining quantity is still there.
+        # Some TPs may already have filled, or fees may have been deducted
+        # from the base asset on entry/DCA fills (reducing what's actually
+        # held) — cap by the real free balance rather than assuming the full
+        # remaining quantity is still there. Cap unconditionally (including
+        # when free_base is 0) so a stale/optimistic `quantity` never causes
+        # an oversell.
         base_currency = symbol.split("/")[0]
         try:
             free_base = float(exchange.fetch_balance()["free"].get(base_currency, 0))
-            if free_base > 0:
-                quantity = min(quantity, free_base)
+            quantity = min(quantity, free_base)
         except Exception:
             pass
 
         # Check minimum order requirements
         market = exchange.market(symbol)
         min_amount = float(market["limits"]["amount"]["min"])
+
+        # Respect Binance's LOT_SIZE step size before submitting. ccxt always
+        # truncates (rounds down) here, so this can only shrink quantity —
+        # never push it back past the free balance just capped above.
+        try:
+            quantity = float(exchange.amountToPrecision(symbol, quantity))
+        except Exception:
+            quantity = 0.0
+
         if quantity < min_amount:
             logger.info(
                 f"Spot order {order.id} has no remaining quantity to close "

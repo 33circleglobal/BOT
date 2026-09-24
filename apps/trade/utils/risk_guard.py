@@ -1,10 +1,16 @@
-"""Pre-open risk checks: max positions, max long/short, one-position-per-symbol.
+"""Pre-open risk checks: max positions, max long/short, one-position-per-symbol,
+and market-data freshness.
 
 Max-position/long/short limits are per-user and configurable from the UI
 (see apps.trade.models.TradeSettings and the "Risk Settings" page). The
-webhook's "update_futures_risk" action (see apps.trade.views) overwrites
+webhook's "update_market_risk" action (see apps.trade.views) overwrites
 these fields bot-wide for every user based on the current market regime.
 The one-position-per-symbol rules remain fixed bot-wide behavior.
+
+Both `can_open_*` functions also refuse new positions when that webhook
+feed has gone stale for a user who depends on it (see
+`TradeSettings.is_market_data_stale`) — a dropped/failed webhook call must
+never leave the bot silently trading on an outdated regime.
 """
 
 from apps.trade.models import FutureOrder, SpotOrder, TradeSettings
@@ -16,6 +22,13 @@ SPOT_ONE_POSITION_PER_SYMBOL = True
 def can_open_futures_position(user, symbol, direction):
     """Returns (allowed: bool, reason: str)."""
     limits = TradeSettings.get_for_user(user)
+
+    if limits.is_market_data_stale():
+        return False, (
+            "Market-regime webhook data is stale (no update in over "
+            f"{limits.max_market_data_age_minutes}m); refusing new futures positions"
+        )
+
     open_positions = FutureOrder.objects.filter(
         user=user, status=FutureOrder.TradeStatus.POSITION
     )
@@ -45,6 +58,13 @@ def can_open_futures_position(user, symbol, direction):
 def can_open_spot_position(user, symbol):
     """Returns (allowed: bool, reason: str)."""
     limits = TradeSettings.get_for_user(user)
+
+    if limits.is_market_data_stale():
+        return False, (
+            "Market-regime webhook data is stale (no update in over "
+            f"{limits.max_market_data_age_minutes}m); refusing new spot positions"
+        )
+
     open_positions = SpotOrder.objects.filter(
         user=user, status=SpotOrder.TradeStatus.POSITION
     )
