@@ -359,6 +359,61 @@
     setInterval(updateDurations, 30000);
   })();
 
+  // --- Client-side pagination for the Closed tables ---
+  (function () {
+    document.querySelectorAll("table.history-paginated-table").forEach((table) => {
+      const pageSize = parseInt(table.dataset.pageSize, 10) || 20;
+      const rows = Array.from(table.querySelectorAll("tbody tr"));
+      const nav = document.querySelector('.history-pagination[data-target="' + table.id + '"]');
+      if (rows.length === 0) return;
+      const totalPages = Math.max(1, Math.ceil(rows.length / pageSize));
+      let currentPage = 1;
+
+      function render() {
+        const start = (currentPage - 1) * pageSize;
+        const end = start + pageSize;
+        rows.forEach((row, idx) => {
+          row.style.display = idx >= start && idx < end ? "" : "none";
+        });
+        if (!nav) return;
+        nav.style.display = totalPages > 1 ? "flex" : "none";
+        const info = nav.querySelector(".history-pagination-info");
+        const indicator = nav.querySelector(".history-page-indicator");
+        const prevBtn = nav.querySelector(".history-page-prev");
+        const nextBtn = nav.querySelector(".history-page-next");
+        if (info) {
+          info.textContent = "Showing " + (start + 1) + "–" + Math.min(end, rows.length) + " of " + rows.length;
+        }
+        if (indicator) indicator.textContent = "Page " + currentPage + " of " + totalPages;
+        if (prevBtn) prevBtn.disabled = currentPage === 1;
+        if (nextBtn) nextBtn.disabled = currentPage === totalPages;
+      }
+
+      if (nav) {
+        const prevBtn = nav.querySelector(".history-page-prev");
+        const nextBtn = nav.querySelector(".history-page-next");
+        if (prevBtn) {
+          prevBtn.addEventListener("click", () => {
+            if (currentPage > 1) {
+              currentPage--;
+              render();
+            }
+          });
+        }
+        if (nextBtn) {
+          nextBtn.addEventListener("click", () => {
+            if (currentPage < totalPages) {
+              currentPage++;
+              render();
+            }
+          });
+        }
+      }
+
+      render();
+    });
+  })();
+
   // Simple spinner on refresh submit
   document.querySelectorAll('.refresh-form').forEach(f => {
     f.addEventListener('submit', () => {

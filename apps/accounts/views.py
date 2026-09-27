@@ -567,10 +567,12 @@ def history_view(request):
             for r in records
             if r["market"] == market_name and r["exchange"] == exchange_name
         ][:limit]
+        closed = [r for r in market_records if r["status"] in CLOSED_STATUSES]
+        closed.sort(key=lambda r: r["closed_at"] or r["created_at"], reverse=True)
         return {
             "open": [r for r in market_records if r["status"] == "OPEN"],
             "position": [r for r in market_records if r["status"] == "POSITION"],
-            "closed": [r for r in market_records if r["status"] in CLOSED_STATUSES],
+            "closed": closed,
         }
 
     binance_spot_buckets = bucket_records("Spot", "Binance")

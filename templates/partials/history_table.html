@@ -1,5 +1,6 @@
 <div class="table-responsive">
-  <table class="table table-hover table-sm align-middle">
+  <table class="table table-hover table-sm align-middle{% if paginate %} history-paginated-table{% endif %}"
+         {% if paginate %}id="{{ table_id }}" data-page-size="20"{% endif %}>
     <thead>
       <tr>
         <th>Time</th>
@@ -27,3 +28,13 @@
     </tbody>
   </table>
 </div>
+{% if paginate and rows %}
+<nav class="history-pagination d-flex justify-content-between align-items-center mt-2" data-target="{{ table_id }}" style="display:none;">
+  <div class="text-muted small history-pagination-info"></div>
+  <div class="btn-group btn-group-sm" role="group">
+    <button type="button" class="btn btn-outline-secondary history-page-prev">Previous</button>
+    <span class="btn btn-outline-secondary disabled history-page-indicator"></span>
+    <button type="button" class="btn btn-outline-secondary history-page-next">Next</button>
+  </div>
+</nav>
+{% endif %}
