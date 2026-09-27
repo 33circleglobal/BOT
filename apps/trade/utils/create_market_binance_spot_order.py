@@ -67,7 +67,7 @@ def create_binance_spot_order(
                 quantity = user_usable_balance / current_price_of_symbol
             else:
                 # For sell orders, we use the available crypto balance
-                base_currency = symbol.split("/")[0]
+                base_currency = market["base"]
                 user_balance = balance["free"].get(base_currency, 0)
                 quantity = user_balance * position / 100
 
@@ -104,7 +104,13 @@ def create_binance_spot_order(
             # can differ slightly after exchange-side precision/slippage.
             executed_qty = float(order.get("filled") or 0) or quantity
 
-            base_asset, quote_asset = symbol.split("/")[0], symbol.split("/")[1]
+            # Webhook/manual symbols are plain concatenated forms (e.g.
+            # "BANANAS31USDT") with no "/" separator, so splitting the raw
+            # `symbol` string here would throw (or, for a bare [0] index
+            # elsewhere, silently return the whole string). The ccxt market
+            # dict fetched above always has unified "base"/"quote" fields
+            # regardless of the symbol's original format.
+            base_asset, quote_asset = market["base"], market["quote"]
             avg_price = float(order["average"])
             base_asset_fee, fee_value_in_quote = split_spot_order_fees(
                 order, base_asset, quote_asset, avg_price

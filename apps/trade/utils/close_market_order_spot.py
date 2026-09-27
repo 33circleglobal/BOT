@@ -95,16 +95,20 @@ def quick_close_spot_position(order: SpotOrder, user: User):
         # remaining quantity is still there. Cap unconditionally (including
         # when free_base is 0) so a stale/optimistic `quantity` never causes
         # an oversell.
-        base_currency = symbol.split("/")[0]
+        # Check minimum order requirements
+        market = exchange.market(symbol)
+        min_amount = float(market["limits"]["amount"]["min"])
+
+        # order.symbol is the plain concatenated webhook form (e.g.
+        # "BANANAS31USDT"), not ccxt's unified "BASE/QUOTE" — splitting it on
+        # "/" would return the whole string as base_currency, which never
+        # matches a balance key and silently zeroes out the close quantity.
+        base_currency = market["base"]
         try:
             free_base = float(exchange.fetch_balance()["free"].get(base_currency, 0))
             quantity = min(quantity, free_base)
         except Exception:
             pass
-
-        # Check minimum order requirements
-        market = exchange.market(symbol)
-        min_amount = float(market["limits"]["amount"]["min"])
 
         # Respect Binance's LOT_SIZE step size before submitting. ccxt always
         # truncates (rounds down) here, so this can only shrink quantity —

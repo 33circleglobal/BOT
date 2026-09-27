@@ -314,7 +314,12 @@ def refresh_spot_order(order: SpotOrder) -> bool:
                     str(dca_info.get("average") or dca_info.get("price") or order.dca_price)
                 )
 
-                base_asset, quote_asset = symbol.split("/")[0], symbol.split("/")[1]
+                # order.symbol is the plain concatenated webhook form (e.g.
+                # "BANANAS31USDT"), not ccxt's unified "BASE/QUOTE" — split
+                # would raise IndexError here. ex.market() resolves either
+                # form to the same unified market dict.
+                dca_market = ex.market(symbol)
+                base_asset, quote_asset = dca_market["base"], dca_market["quote"]
                 base_asset_fee, fee_value_in_quote = split_spot_order_fees(
                     dca_info, base_asset, quote_asset, float(dca_fill_price)
                 )
