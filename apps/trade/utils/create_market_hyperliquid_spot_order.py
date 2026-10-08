@@ -36,7 +36,9 @@ def create_hyperliquid_spot_order(
         position = position_pct
 
         with user_trade_open_lock(user.id):
-            allowed, reason = can_open_spot_position(user, raw_symbol)
+            allowed, reason = can_open_spot_position(
+                user, raw_symbol, exchange=SpotOrder.ExchangeType.HYPERLIQUID
+            )
             if not allowed:
                 logger.info(
                     f"[risk] Skipping HyperLiquid spot order for {user.username} "

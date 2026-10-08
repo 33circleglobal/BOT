@@ -11,6 +11,16 @@ Both `can_open_*` functions also refuse new positions when that webhook
 feed has gone stale for a user who depends on it (see
 `TradeSettings.is_market_data_stale`) — a dropped/failed webhook call must
 never leave the bot silently trading on an outdated regime.
+
+Both also accept an optional `exchange` filter so the position-count/
+long/short checks can be scoped to one exchange family (e.g. only
+HyperLiquid, or only Binance's BINANCE/BINANCE_FUTURES rows). Binance and
+HyperLiquid are separate wallets/margin pools with independent risk, so a
+busy Binance book must not consume a HyperLiquid signal's budget (or vice
+versa) — see the production incidents where BTCUSDC/HYPEUSDC/PUMPUSDC
+HyperLiquid futures signals, and a HyperLiquid spot signal, were silently
+blocked by Binance-side positions alone exceeding the shared cap. Passing
+no `exchange` preserves the old bot-wide pooled behavior.
 """
 
 from apps.trade.models import FutureOrder, SpotOrder, TradeSettings
@@ -19,7 +29,14 @@ FUTURES_ONE_POSITION_PER_SYMBOL = True
 SPOT_ONE_POSITION_PER_SYMBOL = True
 
 
-def can_open_futures_position(user, symbol, direction):
+def _scope_by_exchange(queryset, exchange):
+    if exchange is None:
+        return queryset
+    exchange_filter = exchange if isinstance(exchange, (list, tuple)) else (exchange,)
+    return queryset.filter(exchange__in=exchange_filter)
+
+
+def can_open_futures_position(user, symbol, direction, exchange=None):
     """Returns (allowed: bool, reason: str)."""
     limits = TradeSettings.get_for_user(user)
 
@@ -29,8 +46,9 @@ def can_open_futures_position(user, symbol, direction):
             f"{limits.max_market_data_age_minutes}m); refusing new futures positions"
         )
 
-    open_positions = FutureOrder.objects.filter(
-        user=user, status=FutureOrder.TradeStatus.POSITION
+    open_positions = _scope_by_exchange(
+        FutureOrder.objects.filter(user=user, status=FutureOrder.TradeStatus.POSITION),
+        exchange,
     )
 
     if FUTURES_ONE_POSITION_PER_SYMBOL and open_positions.filter(symbol=symbol).exists():
@@ -55,7 +73,7 @@ def can_open_futures_position(user, symbol, direction):
     return True, ""
 
 
-def can_open_spot_position(user, symbol):
+def can_open_spot_position(user, symbol, exchange=None):
     """Returns (allowed: bool, reason: str)."""
     limits = TradeSettings.get_for_user(user)
 
@@ -65,8 +83,9 @@ def can_open_spot_position(user, symbol):
             f"{limits.max_market_data_age_minutes}m); refusing new spot positions"
         )
 
-    open_positions = SpotOrder.objects.filter(
-        user=user, status=SpotOrder.TradeStatus.POSITION
+    open_positions = _scope_by_exchange(
+        SpotOrder.objects.filter(user=user, status=SpotOrder.TradeStatus.POSITION),
+        exchange,
     )
 
     if SPOT_ONE_POSITION_PER_SYMBOL and open_positions.filter(symbol=symbol).exists():

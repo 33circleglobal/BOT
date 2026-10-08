@@ -44,7 +44,9 @@ def create_hyperliquid_future_order(
         )
 
         with user_trade_open_lock(user.id):
-            allowed, reason = can_open_futures_position(user, raw_symbol, position_direction)
+            allowed, reason = can_open_futures_position(
+                user, raw_symbol, position_direction, exchange=FutureOrder.ExchangeType.HYPERLIQUID
+            )
             if not allowed:
                 logger.info(
                     f"[risk] Skipping HyperLiquid futures order for {user.username} "

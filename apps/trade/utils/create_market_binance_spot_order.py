@@ -38,7 +38,14 @@ def create_binance_spot_order(
         position = position_pct
 
         with user_trade_open_lock(user.id):
-            allowed, reason = can_open_spot_position(user, symbol)
+            allowed, reason = can_open_spot_position(
+                user,
+                symbol,
+                exchange=(
+                    SpotOrder.ExchangeType.BINANCE,
+                    SpotOrder.ExchangeType.BINANCE_FUTURES,
+                ),
+            )
             if not allowed:
                 logger.info(
                     f"[risk] Skipping spot order for {user.username} {symbol}: {reason}"
