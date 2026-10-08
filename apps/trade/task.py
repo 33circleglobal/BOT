@@ -4,7 +4,7 @@ from django.db import transaction
 from apps.accounts.models import UserKey, UserHyperLiquidKey, User
 from apps.trade.models import SpotOrder, FutureOrder
 from apps.trade.utils.create_market_order import create_binance_future_order
-from apps.trade.utils.close_order import quick_close_position
+from apps.trade.utils.close_order import quick_close_position, cancel_pending_limit_order
 
 from apps.trade.utils.close_market_order_spot import quick_close_spot_position
 from apps.trade.utils.create_market_binance_spot_order import create_binance_spot_order
@@ -58,7 +58,7 @@ def create_order_of_user(self, side, symbol, market, user_id, sl=None, tp=None, 
                 create_hyperliquid_spot_order(side, symbol, user, sl=sl, tp=tp, tps=tps, dca=dca)
         else:
             if market == "futures":
-                create_binance_future_order(side, symbol, user, sl=sl, tp=tp, tps=tps)
+                create_binance_future_order(side, symbol, user, sl=sl, tp=tp, tps=tps, order_type=order_type, entry=entry)
             else:
                 create_binance_spot_order(side, symbol, user, sl=sl, tp=tp, tps=tps, dca=dca)
     except Exception as e:
@@ -134,26 +134,34 @@ def quick_close_user_order(self, order_id, market):
 
 # Futures signal orchestration respecting existing positions
 @celery_app.task(bind=True)
-def handle_futures_signal_controller(self, side, symbol, sl=None, tp=None, tps=None, exchange="binance"):
+def handle_futures_signal_controller(self, side, symbol, sl=None, tp=None, tps=None, exchange="binance", order_type="market", entry=None):
     try:
         if exchange == "hyperliquid":
             users_key = UserHyperLiquidKey.objects.filter(is_active=True)
         else:
             users_key = UserKey.objects.filter(is_active=True)
         for user_key in users_key:
-            handle_futures_signal.delay(side, symbol, user_key.user.id, sl, tp, tps, exchange)
+            handle_futures_signal.delay(side, symbol, user_key.user.id, sl, tp, tps, exchange, order_type, entry)
     except Exception as e:
         logger.error(f"Error dispatching futures signal: {e}")
 
 
 @celery_app.task(bind=True, autoretry_for=(Exception,), retry_backoff=True, max_retries=3)
-def handle_futures_signal(self, side, symbol, user_id, sl=None, tp=None, tps=None, exchange="binance"):
+def handle_futures_signal(self, side, symbol, user_id, sl=None, tp=None, tps=None, exchange="binance", order_type="market", entry=None):
     try:
         user = User.objects.get(id=user_id)
         side = side.lower()
         exchange_futures = (
             (FutureOrder.ExchangeType.HYPERLIQUID,) if exchange == "hyperliquid" else _BINANCE_EXCHANGES
         )
+        # A resting limit entry for this symbol is superseded by any new
+        # signal: cancel it (same-direction signals just replace it).
+        if exchange != "hyperliquid":
+            for pending in FutureOrder.objects.filter(
+                user=user, symbol=symbol, status=FutureOrder.TradeStatus.OPEN,
+                exchange__in=exchange_futures,
+            ):
+                cancel_pending_limit_order(pending)
         # find any open positions for user+symbol on this signal's exchange
         open_orders = FutureOrder.objects.filter(
             user=user,
@@ -167,7 +175,7 @@ def handle_futures_signal(self, side, symbol, user_id, sl=None, tp=None, tps=Non
             if exchange == "hyperliquid":
                 create_hyperliquid_future_order(side, symbol, user, sl=sl, tp=tp, tps=tps)
             else:
-                create_binance_future_order(side, symbol, user, sl=sl, tp=tp, tps=tps)
+                create_binance_future_order(side, symbol, user, sl=sl, tp=tp, tps=tps, order_type=order_type, entry=entry)
             return
 
         existing = open_orders.first()
@@ -187,7 +195,7 @@ def handle_futures_signal(self, side, symbol, user_id, sl=None, tp=None, tps=Non
             create_hyperliquid_future_order(side, symbol, user, sl=sl, tp=tp, tps=tps)
         else:
             quick_close_position(order=existing, user=user)
-            create_binance_future_order(side, symbol, user, sl=sl, tp=tp, tps=tps)
+            create_binance_future_order(side, symbol, user, sl=sl, tp=tp, tps=tps, order_type=order_type, entry=entry)
     except Exception as e:
         print("Caught exception:", e)
         raise self.retry(exc=e)
@@ -198,7 +206,9 @@ def handle_futures_signal(self, side, symbol, user_id, sl=None, tp=None, tps=Non
 def refresh_all_futures_positions(self):
     """Beat-scheduled controller: fan out one refresh task per open futures position."""
     try:
-        open_orders = FutureOrder.objects.filter(status=FutureOrder.TradeStatus.POSITION)
+        open_orders = FutureOrder.objects.filter(
+            status__in=[FutureOrder.TradeStatus.POSITION, FutureOrder.TradeStatus.OPEN]
+        )
         for order in open_orders:
             refresh_single_future_position.delay(order.id)
     except Exception as e:

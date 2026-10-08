@@ -125,6 +125,9 @@ def trading_view_webhook(request):
             else "binance"
         )
 
+        order_type = str(payload.get("order_type") or "market").strip().lower()
+        entry = payload.get("entry")
+
         log.symbol = symbol or ""
         log.side = side or ""
         log.market = market or ""
@@ -140,7 +143,7 @@ def trading_view_webhook(request):
 
         if market == "futures":
             # Single orchestrator handles open/close/new per user
-            handle_futures_signal_controller.delay(side, symbol, sl, tp, tps, exchange)
+            handle_futures_signal_controller.delay(side, symbol, sl, tp, tps, exchange, order_type, entry)
         else:
             if side == "buy":
                 create_order_of_user_controller.delay(side, symbol, market, sl, tp, tps, dca, exchange)

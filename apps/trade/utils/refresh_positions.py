@@ -8,7 +8,7 @@ from apps.trade.utils.common import (
     split_spot_order_fees,
 )
 from apps.trade.utils.close_order import cancel_algo_order
-from apps.trade.utils.create_market_order import create_algo_order
+from apps.trade.utils.create_market_order import create_algo_order, activate_filled_limit_order
 
 import logging
 from django.utils import timezone
@@ -61,6 +61,36 @@ def _leg_pnl(direction, entry: Decimal, exit_price: Decimal, qty: Decimal) -> De
     return (entry - exit_price) * qty
 
 
+def _refresh_pending_limit_order(order: FutureOrder) -> bool:
+    """Checks a resting limit entry (status OPEN). Fully filled: record the
+    fill and place the SL/TPs (activate_filled_limit_order). Cancelled/
+    expired/rejected with no fill: mark CANCELLED. Otherwise leave it
+    resting (a partial fill is waited out until complete or cancelled)."""
+    try:
+        user_key = UserKey.objects.get(user=order.user, is_active=True)
+        ex = make_futures_exchange(
+            api_key=user_key.api_key, api_secret=user_key.api_secret
+        )
+        info = ex.fetch_order(order.order_id, order.symbol)
+        status = info.get("status")
+        if status == "closed":
+            activate_filled_limit_order(ex, order, info)
+            return True
+        if status in ("canceled", "cancelled", "expired", "rejected"):
+            if float(info.get("filled") or 0) > 0:
+                # Cancelled after a partial fill: keep what filled as the position.
+                activate_filled_limit_order(ex, order, info)
+            else:
+                order.status = FutureOrder.TradeStatus.CANCELLED
+                order.closed_at = timezone.now()
+                order.save()
+            return True
+        return False
+    except Exception as e:
+        logger.error(f"Failed to refresh pending limit order {order.id}: {e}")
+        return False
+
+
 def refresh_futures_order(order: FutureOrder) -> bool:
     """Sync one open futures position with the exchange.
 
@@ -78,6 +108,8 @@ def refresh_futures_order(order: FutureOrder) -> bool:
       own exit price/qty, plus the SL fill on whatever quantity remained),
       not just a single full-size exit.
     """
+    if order.status == FutureOrder.TradeStatus.OPEN:
+        return _refresh_pending_limit_order(order)
     if order.status != FutureOrder.TradeStatus.POSITION:
         return False
     try:

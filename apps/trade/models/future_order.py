@@ -53,6 +53,12 @@ class FutureOrder(models.Model):
     pnl = models.DecimalField(max_digits=20, decimal_places=10, default=0)
     pnl_percentage = models.DecimalField(max_digits=10, decimal_places=2, default=0)
 
+    # Resting limit-entry orders (status OPEN): the SL/TP plan is stored here
+    # until the entry fills, since reduce-only SL/TP orders can't be placed
+    # on Binance before a position exists. See activate_filled_limit_order.
+    pending_sl = models.DecimalField(max_digits=20, decimal_places=10, null=True, blank=True)
+    pending_tps = models.JSONField(null=True, blank=True)
+
     # If true, ignore opposite webhook signals; user will close manually
     ignore_opposite_signal = models.BooleanField(default=False)
 

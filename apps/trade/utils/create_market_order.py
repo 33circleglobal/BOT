@@ -111,6 +111,152 @@ def create_algo_order(
     return result
 
 
+def place_futures_protection(exchange, fobj, side, quantity, cur, sl, tp, tps, user):
+    """Places the SL and TP algo orders for an already-persisted, already-
+    filled entry (fobj) and records them on it. Shared by the market-entry
+    path (right after the fill) and the limit-entry path (once the resting
+    order fills). `cur` is the reference price SL/TP direction is validated
+    against. Never raises on exchange errors: the position is already live,
+    so failures degrade to "unprotected" flags instead of losing track of it."""
+    symbol = fobj.symbol
+    inv_side = opposite_side(side)
+    # Validate manual SL/TP against current price to avoid immediate
+    # triggers. The entry order above has already filled — from here
+    # on, invalid input degrades gracefully (fall back to a computed
+    # default SL / skip the TP) instead of raising, since an
+    # uncaught exception at this point would abort the whole
+    # function before the FutureOrder row further below is created,
+    # leaving a real, unprotected position on the exchange
+    # completely untracked on our side.
+    cur = float(current_price_of_symbol)
+    if sl is not None:
+        s = float(sl)
+        if (side == "buy" and s >= cur) or (side == "sell" and s <= cur):
+            logger.error(
+                f"[sl] Invalid SL for {symbol}: sl={s}, current={cur}, side={side}. "
+                f"Falling back to the computed default SL."
+            )
+            sl = None
+    if tp is not None:
+        t = float(tp)
+        if (side == "buy" and t <= cur) or (side == "sell" and t >= cur):
+            logger.error(
+                f"[tp] Invalid single TP for {symbol}: tp={t}, current={cur}, side={side}. "
+                f"Skipping this TP."
+            )
+            tp = None
+
+
+    # Stop loss: optionally disabled via feature flag
+    sl_order = None
+    stop_price = None
+    sl_trigger = None
+    if settings.DISABLE_FUTURES_STOP_LOSS:
+        logger.info(
+            f"[sl] Stop loss disabled via feature flag for {symbol}, skipping."
+        )
+    else:
+        stop_price = (
+            float(sl)
+            if sl is not None
+            else compute_default_sl(entry_price, side)
+        )
+        sl_trigger = float(exchange.priceToPrecision(symbol, stop_price))
+        try:
+            sl_order = create_algo_order(
+                exchange,
+                symbol,
+                inv_side,
+                "STOP_MARKET",
+                quantity,
+                trigger_price=sl_trigger,
+                reduce_only=True,
+            )
+        except Exception as e:
+            logger.error(
+                f"[sl] Error creating SL algo order for {symbol} "
+                f"(trigger={sl_trigger}, qty={quantity}): {e}",
+                exc_info=True,
+            )
+            sl_order = None
+
+    if sl_order:
+        # Use sl_trigger (the price we actually sent to Binance) rather
+        # than parsing it back out of the algoOrder ack: Binance echoes
+        # a "price": "0" placeholder for these market-triggered stops,
+        # and that truthy non-empty string was winning the `or` chain
+        # here, silently persisting stop_loss_price=0.
+        fobj.stop_loss_order_id = sl_order["id"]
+        fobj.stop_loss_price = sl_trigger
+        fobj.stop_loss_status = FutureOrder.TradeStatus.POSITION
+    else:
+        fobj.stop_loss_order_id = f"DISABLED-{uuid4()}"
+        fobj.stop_loss_price = 0
+        fobj.stop_loss_status = FutureOrder.TradeStatus.CANCELLED
+        if not settings.DISABLE_FUTURES_STOP_LOSS:
+            logger.warning(
+                f"[sl] No SL order was created for {symbol}, user={user.username}. "
+                f"Position is UNPROTECTED."
+            )
+    fobj.save(
+        update_fields=["stop_loss_order_id", "stop_loss_price", "stop_loss_status"]
+    )
+
+    # Optional single TP or multiple TPs. Everything in this section
+    # is wrapped in its own try/except: entry + SL are already live
+    # on the exchange and fobj is already persisted above, so an
+    # uncaught exception here must NOT be allowed to propagate out
+    # of the user_trade_open_lock() atomic block — that would roll
+    # back the FutureOrder row and SL fields we just committed,
+    # leaving a real, live, unprotected-looking position on the
+    # exchange with no DB record at all (see git history for an
+    # incident where exactly this happened).
+    created_tps = []
+    try:
+        created_tps = _create_futures_take_profits(
+            exchange, symbol, side, inv_side, quantity, tps, tp, cur
+        )
+    except Exception as e:
+        logger.error(
+            f"[tp] Unexpected error processing TPs for {symbol}, "
+            f"user={user.username}: {e}",
+            exc_info=True,
+        )
+        created_tps = []
+
+    if not created_tps:
+        logger.warning(
+            f"[tp] No TP orders were created for {symbol}, user={user.username}."
+        )
+
+    # Persist multiple TP children if any
+    try:
+        if created_tps:
+            for item in created_tps:
+                FutureTakeProfit.objects.create(
+                    order=fobj,
+                    tp_order_id=item["id"],
+                    price=item["price"],
+                    percent=item["percent"],
+                    quantity=item["qty"],
+                    status=FutureTakeProfit.TradeStatus.POSITION,
+                )
+    except Exception as e:
+        logger.error(
+            f"[tp] Error persisting FutureTakeProfit rows for {symbol}, "
+            f"user={user.username}: {e}",
+            exc_info=True,
+        )
+
+    logger.info(
+        f"[summary] {symbol} order {fobj.order_id} created for {user.username}: "
+        f"sl_status={fobj.stop_loss_status}, sl_id={fobj.stop_loss_order_id}, "
+        f"tps_created={len(created_tps)}"
+    )
+
+    return True
+
+
 def create_binance_future_order(
     side: str,
     symbol: str,
@@ -121,10 +267,25 @@ def create_binance_future_order(
     tps: list | None = None,
     leverage: int | None = None,
     position_pct: float | None = None,
+    order_type: str = "market",
+    entry: float | None = None,
 ):
+    """order_type="limit" (with `entry`) rests a GTC limit entry and records
+    a FutureOrder in OPEN status holding the SL/TP plan; SL/TP are placed by
+    activate_filled_limit_order once the refresh job sees it filled. Any
+    other order_type (or a limit without a usable entry) enters at market."""
     try:
         margin_mode = "crossed"
         side = side.lower()
+        is_limit = str(order_type or "").lower() == "limit"
+        if is_limit:
+            try:
+                entry = float(entry)
+                if entry <= 0:
+                    raise ValueError
+            except (TypeError, ValueError):
+                logger.error(f"[limit] Invalid entry price {entry!r} for {symbol}, skipping order.")
+                return False
         # Per-user, UI-configurable in Risk Settings; explicit args (if ever
         # passed by a caller) still take precedence over the saved defaults.
         trade_settings = TradeSettings.get_for_user(user)
@@ -156,45 +317,66 @@ def create_binance_future_order(
             balance = exchange.fetch_balance()
             user_balance = balance["free"]["USDT"]
 
+            # Size off the price we'll actually fill at.
+            sizing_price = entry if is_limit else current_price_of_symbol
             user_usable_balance = (user_balance * position / 100) * leverage
-            print(user_usable_balance, current_price_of_symbol)
-            quantity = user_usable_balance / current_price_of_symbol
+            quantity = user_usable_balance / sizing_price
             quantity = exchange.amountToPrecision(symbol, quantity)
+
+            if is_limit:
+                entry = float(exchange.priceToPrecision(symbol, entry))
+                if sl is not None:
+                    s = float(sl)
+                    if (side == "buy" and s >= entry) or (side == "sell" and s <= entry):
+                        logger.error(
+                            f"[sl] Invalid SL for {symbol}: sl={s}, entry={entry}, "
+                            f"side={side}. Falling back to the computed default SL."
+                        )
+                        sl = None
 
             set_margin_mode(exchange, symbol, margin_mode)
             apply_leverage(exchange, symbol, leverage)
+
+            if is_limit:
+                order = exchange.create_order(
+                    symbol=symbol,
+                    side=side,
+                    type="limit",
+                    amount=quantity,
+                    price=entry,
+                    params={"timeInForce": "GTC"},
+                )
+                logger.info(f"[limit] entry order: {order}")
+                pending_tps = None
+                if tps:
+                    pending_tps = [
+                        {"price": float(t["price"]), "percent": float(t["percent"])}
+                        for t in tps
+                    ]
+                elif tp is not None:
+                    pending_tps = [{"price": float(tp), "percent": 100.0}]
+                FutureOrder.objects.create(
+                    order_id=order["id"],
+                    symbol=symbol,
+                    direction=position_direction,
+                    status=FutureOrder.TradeStatus.OPEN,
+                    leverage=leverage,
+                    order_quantity=quantity,
+                    entry_price=entry,
+                    stop_loss_order_id=f"PENDING-{uuid4()}",
+                    stop_loss_price=0,
+                    stop_loss_status=FutureOrder.TradeStatus.CANCELLED,
+                    pending_sl=sl,
+                    pending_tps=pending_tps,
+                    user=user,
+                )
+                return True
 
             order = exchange.create_order(
                 symbol=symbol, side=side, type="market", amount=quantity
             )
             logger.info(f"order: {order}")
-
-            inv_side = opposite_side(side)
-            # Validate manual SL/TP against current price to avoid immediate
-            # triggers. The entry order above has already filled — from here
-            # on, invalid input degrades gracefully (fall back to a computed
-            # default SL / skip the TP) instead of raising, since an
-            # uncaught exception at this point would abort the whole
-            # function before the FutureOrder row further below is created,
-            # leaving a real, unprotected position on the exchange
-            # completely untracked on our side.
             cur = float(current_price_of_symbol)
-            if sl is not None:
-                s = float(sl)
-                if (side == "buy" and s >= cur) or (side == "sell" and s <= cur):
-                    logger.error(
-                        f"[sl] Invalid SL for {symbol}: sl={s}, current={cur}, side={side}. "
-                        f"Falling back to the computed default SL."
-                    )
-                    sl = None
-            if tp is not None:
-                t = float(tp)
-                if (side == "buy" and t <= cur) or (side == "sell" and t >= cur):
-                    logger.error(
-                        f"[tp] Invalid single TP for {symbol}: tp={t}, current={cur}, side={side}. "
-                        f"Skipping this TP."
-                    )
-                    tp = None
 
             try:
                 order = exchange.fetch_order(order["id"], symbol)
@@ -212,13 +394,10 @@ def create_binance_future_order(
             entry_price = order.get("average") or cur
 
             # Persist the position NOW, before attempting SL/TP, so it is
-            # tracked even if everything below fails. A bad TP price used to
-            # raise all the way past the point where this row used to be
-            # created, leaving a real, live position on Binance (with or
-            # without an SL) completely invisible to our dashboard and
-            # refresh/risk-limit systems. SL fields start out as "no
-            # protection yet" and are updated in place once SL placement
-            # below resolves.
+            # tracked even if everything below fails (a bad TP price used to
+            # leave a live, untracked position on Binance). SL fields start
+            # out as "no protection yet" and are updated in place once SL
+            # placement resolves.
             fobj = FutureOrder.objects.create(
                 order_id=order["id"],
                 symbol=symbol,
@@ -235,120 +414,45 @@ def create_binance_future_order(
                 user=user,
             )
 
-            # Stop loss: optionally disabled via feature flag
-            sl_order = None
-            stop_price = None
-            sl_trigger = None
-            if settings.DISABLE_FUTURES_STOP_LOSS:
-                logger.info(
-                    f"[sl] Stop loss disabled via feature flag for {symbol}, skipping."
-                )
-            else:
-                stop_price = (
-                    float(sl)
-                    if sl is not None
-                    else compute_default_sl(entry_price, side)
-                )
-                sl_trigger = float(exchange.priceToPrecision(symbol, stop_price))
-                try:
-                    sl_order = create_algo_order(
-                        exchange,
-                        symbol,
-                        inv_side,
-                        "STOP_MARKET",
-                        quantity,
-                        trigger_price=sl_trigger,
-                        reduce_only=True,
-                    )
-                except Exception as e:
-                    logger.error(
-                        f"[sl] Error creating SL algo order for {symbol} "
-                        f"(trigger={sl_trigger}, qty={quantity}): {e}",
-                        exc_info=True,
-                    )
-                    sl_order = None
-
-            if sl_order:
-                # Use sl_trigger (the price we actually sent to Binance) rather
-                # than parsing it back out of the algoOrder ack: Binance echoes
-                # a "price": "0" placeholder for these market-triggered stops,
-                # and that truthy non-empty string was winning the `or` chain
-                # here, silently persisting stop_loss_price=0.
-                fobj.stop_loss_order_id = sl_order["id"]
-                fobj.stop_loss_price = sl_trigger
-                fobj.stop_loss_status = FutureOrder.TradeStatus.POSITION
-            else:
-                fobj.stop_loss_order_id = f"DISABLED-{uuid4()}"
-                fobj.stop_loss_price = 0
-                fobj.stop_loss_status = FutureOrder.TradeStatus.CANCELLED
-                if not settings.DISABLE_FUTURES_STOP_LOSS:
-                    logger.warning(
-                        f"[sl] No SL order was created for {symbol}, user={user.username}. "
-                        f"Position is UNPROTECTED."
-                    )
-            fobj.save(
-                update_fields=["stop_loss_order_id", "stop_loss_price", "stop_loss_status"]
+            return place_futures_protection(
+                exchange, fobj, side, quantity, cur, sl, tp, tps, user
             )
-
-            # Optional single TP or multiple TPs. Everything in this section
-            # is wrapped in its own try/except: entry + SL are already live
-            # on the exchange and fobj is already persisted above, so an
-            # uncaught exception here must NOT be allowed to propagate out
-            # of the user_trade_open_lock() atomic block — that would roll
-            # back the FutureOrder row and SL fields we just committed,
-            # leaving a real, live, unprotected-looking position on the
-            # exchange with no DB record at all (see git history for an
-            # incident where exactly this happened).
-            created_tps = []
-            try:
-                created_tps = _create_futures_take_profits(
-                    exchange, symbol, side, inv_side, quantity, tps, tp, cur
-                )
-            except Exception as e:
-                logger.error(
-                    f"[tp] Unexpected error processing TPs for {symbol}, "
-                    f"user={user.username}: {e}",
-                    exc_info=True,
-                )
-                created_tps = []
-
-            if not created_tps:
-                logger.warning(
-                    f"[tp] No TP orders were created for {symbol}, user={user.username}."
-                )
-
-            # Persist multiple TP children if any
-            try:
-                if created_tps:
-                    for item in created_tps:
-                        FutureTakeProfit.objects.create(
-                            order=fobj,
-                            tp_order_id=item["id"],
-                            price=item["price"],
-                            percent=item["percent"],
-                            quantity=item["qty"],
-                            status=FutureTakeProfit.TradeStatus.POSITION,
-                        )
-            except Exception as e:
-                logger.error(
-                    f"[tp] Error persisting FutureTakeProfit rows for {symbol}, "
-                    f"user={user.username}: {e}",
-                    exc_info=True,
-                )
-
-            logger.info(
-                f"[summary] {symbol} order {fobj.order_id} created for {user.username}: "
-                f"sl_status={fobj.stop_loss_status}, sl_id={fobj.stop_loss_order_id}, "
-                f"tps_created={len(created_tps)}"
-            )
-
-            return True
 
     except Exception as e:
         logger.error(
             f"Error creating futures order for {user.username}: {e}", exc_info=True
         )
         return False
+
+
+def activate_filled_limit_order(exchange, fobj, entry_order):
+    """Called by the refresh job once a resting limit entry (status OPEN) has
+    fully filled: records the real fill (price/qty/fee), flips the order to
+    POSITION, and places the SL/TP plan stored at order time."""
+    fee = entry_order.get("fee") or {}
+    filled_qty = entry_order.get("filled") or float(fobj.order_quantity)
+    fill_price = entry_order.get("average") or float(fobj.entry_price)
+    fobj.entry_price = fill_price
+    fobj.order_quantity = filled_qty
+    fobj.entry_fee = fee.get("cost", 0) or 0
+    fobj.entry_fee_currency = fee.get("currency", "USDT")
+    fobj.total_fee = fee.get("cost", 0) or 0
+    fobj.status = FutureOrder.TradeStatus.POSITION
+    fobj.save()
+
+    quantity = exchange.amountToPrecision(fobj.symbol, filled_qty)
+    side = "buy" if fobj.direction == FutureOrder.TradeDirection.LONG else "sell"
+    place_futures_protection(
+        exchange,
+        fobj,
+        side,
+        quantity,
+        float(fill_price),
+        float(fobj.pending_sl) if fobj.pending_sl is not None else None,
+        None,
+        fobj.pending_tps,
+        fobj.user,
+    )
 
 
 def _create_futures_take_profits(exchange, symbol, side, inv_side, quantity, tps, tp, cur):

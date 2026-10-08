@@ -3,6 +3,7 @@ from apps.trade.models import FutureOrder, FutureTakeProfit
 from apps.trade.utils.common import make_futures_exchange
 
 import ccxt
+from django.utils import timezone
 import logging
 
 logging.basicConfig(level=logging.INFO)
@@ -28,6 +29,27 @@ def cancel_algo_order(exchange, symbol, algo_id):
         # Order may have already triggered/expired — not fatal
         logger.warning(f"Could not cancel algo order {algo_id} for {symbol}: {e}")
         return None
+
+
+def cancel_pending_limit_order(order: FutureOrder):
+    """Cancels a resting limit entry (status OPEN) on Binance and marks it
+    CANCELLED. If it filled in the meantime, leaves it for the refresh job
+    to activate (SL/TP) instead."""
+    try:
+        key = UserKey.objects.get(user=order.user, is_active=True)
+        exchange = make_futures_exchange(api_key=key.api_key, api_secret=key.api_secret)
+        info = exchange.fetch_order(order.order_id, order.symbol)
+        if info.get("status") == "open":
+            exchange.cancel_order(order.order_id, order.symbol)
+        elif info.get("status") == "closed" or float(info.get("filled") or 0) > 0:
+            return False
+        order.status = FutureOrder.TradeStatus.CANCELLED
+        order.closed_at = timezone.now()
+        order.save()
+        return True
+    except Exception as e:
+        logger.error(f"Could not cancel pending limit order {order.id}: {e}", exc_info=True)
+        return False
 
 
 def quick_close_position(order: FutureOrder, user: User):

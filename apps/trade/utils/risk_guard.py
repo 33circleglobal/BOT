@@ -29,8 +29,11 @@ def can_open_futures_position(user, symbol, direction):
             f"{limits.max_market_data_age_minutes}m); refusing new futures positions"
         )
 
+    # Resting limit entries (OPEN) count against the limits too, so pending
+    # orders can't pile past max positions once they fill.
     open_positions = FutureOrder.objects.filter(
-        user=user, status=FutureOrder.TradeStatus.POSITION
+        user=user,
+        status__in=[FutureOrder.TradeStatus.POSITION, FutureOrder.TradeStatus.OPEN],
     )
 
     if FUTURES_ONE_POSITION_PER_SYMBOL and open_positions.filter(symbol=symbol).exists():
