@@ -301,7 +301,15 @@ def create_binance_future_order(
         )
 
         with user_trade_open_lock(user.id):
-            allowed, reason = can_open_futures_position(user, symbol, position_direction)
+            allowed, reason = can_open_futures_position(
+                user,
+                symbol,
+                position_direction,
+                exchange=(
+                    FutureOrder.ExchangeType.BINANCE,
+                    FutureOrder.ExchangeType.BINANCE_FUTURES,
+                ),
+            )
             if not allowed:
                 logger.info(
                     f"[risk] Skipping futures order for {user.username} {symbol}: {reason}"
