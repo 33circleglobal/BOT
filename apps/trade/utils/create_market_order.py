@@ -128,7 +128,7 @@ def place_futures_protection(exchange, fobj, side, quantity, cur, sl, tp, tps, u
     # function before the FutureOrder row further below is created,
     # leaving a real, unprotected position on the exchange
     # completely untracked on our side.
-    cur = float(current_price_of_symbol)
+    cur = float(cur)
     if sl is not None:
         s = float(sl)
         if (side == "buy" and s >= cur) or (side == "sell" and s <= cur):
@@ -159,7 +159,7 @@ def place_futures_protection(exchange, fobj, side, quantity, cur, sl, tp, tps, u
         stop_price = (
             float(sl)
             if sl is not None
-            else compute_default_sl(entry_price, side)
+            else compute_default_sl(float(fobj.entry_price), side)
         )
         sl_trigger = float(exchange.priceToPrecision(symbol, stop_price))
         try:
