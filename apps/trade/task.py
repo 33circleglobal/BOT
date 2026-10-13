@@ -58,7 +58,7 @@ def create_order_of_user(self, side, symbol, market, user_id, sl=None, tp=None, 
                 create_hyperliquid_spot_order(side, symbol, user, sl=sl, tp=tp, tps=tps, dca=dca)
         else:
             if market == "futures":
-                create_binance_future_order(side, symbol, user, sl=sl, tp=tp, tps=tps, order_type=order_type, entry=entry)
+                create_binance_future_order(side, symbol, user, sl=sl, tp=tp, tps=tps)
             else:
                 create_binance_spot_order(side, symbol, user, sl=sl, tp=tp, tps=tps, dca=dca)
     except Exception as e:

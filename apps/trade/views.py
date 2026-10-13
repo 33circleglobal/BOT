@@ -23,7 +23,7 @@ from apps.trade.utils.common import (
     get_symbol_last_price,
     opposite_side,
 )
-from apps.trade.utils.close_order import quick_close_position, cancel_algo_order
+from apps.trade.utils.close_order import quick_close_position, cancel_algo_order, cancel_pending_limit_order
 from apps.trade.utils.close_market_order_spot import quick_close_spot_position
 from apps.trade.utils.create_market_order import create_algo_order
 from apps.trade.utils.refresh_positions import refresh_futures_order, refresh_spot_order
@@ -625,6 +625,109 @@ def update_futures_multi_tp(request):
 
 
 @login_required
+def edit_pending_futures_order(request):
+    """Edit the entry price and/or planned SL of a resting Binance limit entry
+    (status OPEN). The entry is amended in place on Binance; the SL is only
+    stored (pending_sl) since it's placed once the entry fills."""
+    if request.method != "POST":
+        return HttpResponseBadRequest("Invalid method")
+    order_id = request.POST.get("order_id")
+    if not order_id:
+        return HttpResponseBadRequest("Missing order_id")
+    try:
+        order = FutureOrder.objects.get(
+            id=order_id,
+            user=request.user,
+            status=FutureOrder.TradeStatus.OPEN,
+        )
+    except FutureOrder.DoesNotExist:
+        messages.error(request, "Order not found or no longer pending")
+        return redirect("accounts:history")
+    if order.exchange == FutureOrder.ExchangeType.HYPERLIQUID:
+        messages.error(request, "Editing is only supported for Binance futures")
+        return redirect("accounts:history")
+
+    is_long = order.direction == FutureOrder.TradeDirection.LONG
+    try:
+        entry_raw = (request.POST.get("entry") or "").strip()
+        sl_raw = (request.POST.get("sl") or "").strip()
+        new_entry = float(entry_raw) if entry_raw else float(order.entry_price)
+        new_sl = float(sl_raw) if sl_raw else None
+        if new_entry <= 0:
+            raise ValueError("Entry must be positive")
+        if new_sl is not None and new_sl <= 0:
+            raise ValueError("SL must be positive")
+    except ValueError as e:
+        messages.error(request, f"Invalid value: {e}")
+        return redirect("accounts:history")
+
+    if new_sl is not None and ((is_long and new_sl >= new_entry) or (not is_long and new_sl <= new_entry)):
+        messages.error(
+            request,
+            "SL must be below entry for long." if is_long else "SL must be above entry for short.",
+        )
+        return redirect("accounts:history")
+
+    try:
+        user_key = UserKey.objects.get(user=request.user, is_active=True)
+        ex = make_futures_exchange(
+            api_key=user_key.api_key, api_secret=user_key.api_secret
+        )
+        new_entry = float(ex.priceToPrecision(order.symbol, new_entry))
+        if new_entry != float(order.entry_price):
+            info = ex.fetch_order(order.order_id, order.symbol)
+            if info.get("status") != "open" or float(info.get("filled") or 0) > 0:
+                messages.error(
+                    request,
+                    "Order already filled/closed on the exchange; refresh it instead.",
+                )
+                return redirect("accounts:history")
+            side = "buy" if is_long else "sell"
+            ex.edit_order(
+                order.order_id,
+                order.symbol,
+                "limit",
+                side,
+                float(info.get("amount") or order.order_quantity),
+                new_entry,
+                {"timeInForce": "GTC"},
+            )
+            order.entry_price = new_entry
+        order.pending_sl = new_sl
+        order.save(update_fields=["entry_price", "pending_sl"])
+        messages.success(request, "Pending order updated")
+    except Exception as e:
+        messages.error(request, f"Failed to update pending order: {e}")
+    return redirect("accounts:history")
+
+
+@login_required
+def cancel_pending_futures_order(request):
+    if request.method != "POST":
+        return HttpResponseBadRequest("Invalid method")
+    order_id = request.POST.get("order_id")
+    if not order_id:
+        return HttpResponseBadRequest("Missing order_id")
+    try:
+        order = FutureOrder.objects.get(
+            id=order_id,
+            user=request.user,
+            status=FutureOrder.TradeStatus.OPEN,
+        )
+    except FutureOrder.DoesNotExist:
+        messages.error(request, "Order not found or no longer pending")
+        return redirect("accounts:history")
+    if cancel_pending_limit_order(order):
+        messages.success(request, "Pending order cancelled")
+    else:
+        messages.error(
+            request,
+            "Could not cancel (it may have just filled). Refresh to check.",
+        )
+    return redirect("accounts:history")
+
+
+@login_required
 def close_futures_order(request):
     if request.method != "POST":
         return HttpResponseBadRequest("Invalid method")
@@ -684,7 +787,9 @@ def refresh_order(request):
     try:
         if market == "Futures":
             order = FutureOrder.objects.get(
-                id=order_id, user=request.user, status=FutureOrder.TradeStatus.POSITION
+                id=order_id,
+                user=request.user,
+                status__in=[FutureOrder.TradeStatus.POSITION, FutureOrder.TradeStatus.OPEN],
             )
             if order.exchange == FutureOrder.ExchangeType.HYPERLIQUID:
                 updated = refresh_hyperliquid_futures_order(order)

@@ -136,6 +136,29 @@
           <i class="bi bi-shield-lock"></i>
         </button>
       </form>
+    {% elif r.market == 'Futures' and r.status == 'OPEN' and r.exchange == 'Binance' %}
+      <!-- Edit pending limit entry / SL -->
+      <button class="btn btn-sm btn-outline-primary me-1" title="Edit entry / SL"
+              data-bs-toggle="modal" data-bs-target="#pendingModal"
+              data-order-id="{{ r.id }}" data-symbol="{{ r.symbol }}" data-direction="{{ r.direction }}"
+              data-entry="{{ r.entry_price }}" data-sl="{{ r.sl_price|default_if_none:'' }}">
+        <i class="bi bi-pencil-square"></i>
+      </button>
+      <form method="post" action="{% url 'trading:cancel_pending_futures_order' %}" style="display:inline" onsubmit="return confirm('Cancel this pending order?')">
+        {% csrf_token %}
+        <input type="hidden" name="order_id" value="{{ r.id }}" />
+        <button type="submit" class="btn btn-sm btn-outline-danger" title="Cancel pending order">
+          <i class="bi bi-x-circle"></i>
+        </button>
+      </form>
+      <form method="post" action="{% url 'trading:refresh_order' %}" style="display:inline" class="refresh-form">
+        {% csrf_token %}
+        <input type="hidden" name="order_id" value="{{ r.id }}" />
+        <input type="hidden" name="market" value="{{ r.market }}" />
+        <button type="submit" class="btn btn-sm btn-outline-success ms-1 refresh-btn" title="Check fill status">
+          <i class="bi bi-arrow-repeat refresh-icon"></i>
+        </button>
+      </form>
     {% elif r.market == 'Spot' and r.status == 'POSITION' %}
       <!-- SL button for Spot -->
       <button class="btn btn-sm btn-outline-danger me-1" title="{% if r.sl_price and r.sl_price > 0 %}Edit SL{% else %}Add SL{% endif %}"

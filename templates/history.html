@@ -193,7 +193,50 @@
   </div>
 </div>
 
+<!-- Pending (resting limit) order modal -->
+<div class="modal fade" id="pendingModal" tabindex="-1" aria-hidden="true">
+  <div class="modal-dialog">
+    <div class="modal-content">
+      <form method="post" action="{% url 'trading:edit_pending_futures_order' %}">
+        {% csrf_token %}
+        <div class="modal-header">
+          <h5 class="modal-title">Edit pending order <span id="pendingModalSymbol" class="text-muted"></span></h5>
+          <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+        </div>
+        <div class="modal-body">
+          <input type="hidden" name="order_id" id="pendingModalOrderId" />
+          <div class="mb-3">
+            <label class="form-label">Entry price (<span id="pendingModalDir"></span>)</label>
+            <input name="entry" id="pendingModalEntry" class="form-control" required />
+          </div>
+          <div class="mb-3">
+            <label class="form-label">Stop Loss price</label>
+            <input name="sl" id="pendingModalSl" class="form-control" placeholder="Leave empty for default SL" />
+            <div class="form-text">SL is placed once the entry fills.</div>
+          </div>
+        </div>
+        <div class="modal-footer">
+          <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Close</button>
+          <button type="submit" class="btn btn-primary">Save</button>
+        </div>
+      </form>
+    </div>
+  </div>
+</div>
+
 <script>
+  const pendingModal = document.getElementById('pendingModal');
+  if (pendingModal) {
+    pendingModal.addEventListener('show.bs.modal', event => {
+      const btn = event.relatedTarget;
+      document.getElementById('pendingModalOrderId').value = btn.getAttribute('data-order-id');
+      document.getElementById('pendingModalSymbol').textContent = `(${btn.getAttribute('data-symbol')})`;
+      document.getElementById('pendingModalDir').textContent = btn.getAttribute('data-direction');
+      document.getElementById('pendingModalEntry').value = btn.getAttribute('data-entry') || '';
+      const sl = btn.getAttribute('data-sl');
+      document.getElementById('pendingModalSl').value = sl && sl !== '0' ? sl : '';
+    });
+  }
   const tpModal = document.getElementById('tpModal');
   if (tpModal) {
     tpModal.addEventListener('show.bs.modal', event => {
