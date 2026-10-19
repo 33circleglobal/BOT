@@ -5,6 +5,8 @@ from apps.trade.utils.common import (
     get_symbol_last_price,
     compute_default_sl,
     split_spot_order_fees,
+    build_pending_tps,
+    parse_limit_entry,
 )
 from apps.trade.utils.risk_guard import can_open_spot_position
 from apps.trade.utils.locks import user_trade_open_lock
@@ -17,6 +19,218 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 
+def place_binance_spot_protection(exchange, created, market, symbol, side, quantity, cur, avg_price, sl, tp, tps, dca, user):
+    """Places the TP / protective SL / DCA orders for an already-persisted,
+    already-filled spot entry (`created`) and records them on it. Shared by
+    the market-entry path (right after the fill) and the limit-entry path
+    (once the resting buy fills). `cur` is the reference price TP/DCA
+    direction is validated against. Never raises on per-order exchange
+    errors: the position is live, so failures just leave it unprotected."""
+    cur = float(cur)
+    min_amount = float(market["limits"]["amount"]["min"])
+    min_cost = float(market["limits"]["cost"]["min"])
+
+    # Signals carrying tp/tps are limit-TP-only: place resting LIMIT
+    # sell orders at each target and skip stop-loss entirely (no sl
+    # field is sent for these, and we don't synthesize a default).
+    # Legacy signals with neither tp nor tps keep the original
+    # single protective stop-loss behavior below.
+    if side == "buy" and (tps or tp is not None):
+        base_qty = float(created.final_quantity or quantity)
+        tp_defs = list(tps) if tps else [{"price": tp, "percent": 100.0}]
+
+        created_tps = []
+        # Each leg's quantity gets rounded independently via
+        # amountToPrecision, so the legs can sum to slightly less
+        # than base_qty — leaving a dust remainder with no TP sized
+        # to close it, or the declared percents might simply not
+        # add up to 100% in the first place. Give the last leg
+        # whatever's actually left instead of its own percent
+        # share, unconditionally, so the position always fully
+        # closes via TPs no matter what the percents were.
+        remaining_qty = base_qty
+        for idx, tp_def in enumerate(tp_defs):
+            try:
+                p = float(tp_def.get("price"))
+                pct = float(tp_def.get("percent"))
+            except Exception as e:
+                logger.error(
+                    f"[tp] Spot TP #{idx} for {symbol} has invalid price/percent: {tp_def} ({e})"
+                )
+                continue
+            if pct <= 0:
+                logger.warning(
+                    f"[tp] Spot TP #{idx} for {symbol} skipped: percent<=0 ({pct})"
+                )
+                continue
+            if p <= cur:
+                # Skip just this leg rather than raise — the order
+                # row is already persisted above, and an uncaught
+                # exception here would abort the remaining TPs plus
+                # the SL/DCA placement below for an otherwise-fine
+                # position.
+                logger.error(
+                    f"[tp] Spot TP #{idx} for {symbol} invalid: price {p} <= current {cur}. "
+                    f"Skipping this TP."
+                )
+                continue
+            is_last = idx == len(tp_defs) - 1
+            if is_last:
+                part_qty = max(remaining_qty, 0)
+            else:
+                part_qty = base_qty * (pct / 100.0)
+            qty_p = float(exchange.amountToPrecision(symbol, part_qty))
+            price_p = float(exchange.priceToPrecision(symbol, p))
+            if qty_p <= 0:
+                logger.warning(
+                    f"[tp] Spot TP #{idx} for {symbol} skipped: rounded qty is 0"
+                )
+                continue
+            if min_amount and qty_p < min_amount:
+                logger.warning(
+                    f"[tp] Spot TP #{idx} for {symbol} skipped: qty {qty_p} "
+                    f"below exchange min_amount {min_amount}"
+                )
+                continue
+            if min_cost and (qty_p * price_p) < min_cost:
+                logger.warning(
+                    f"[tp] Spot TP #{idx} for {symbol} skipped: notional "
+                    f"{qty_p * price_p} below exchange min_cost {min_cost}"
+                )
+                continue
+            try:
+                tp_o = exchange.create_order(
+                    symbol=symbol,
+                    side="sell",
+                    type="limit",
+                    amount=qty_p,
+                    price=price_p,
+                )
+                SpotTakeProfit.objects.create(
+                    order=created,
+                    tp_order_id=tp_o.get("id", ""),
+                    price=price_p,
+                    percent=pct,
+                    quantity=qty_p,
+                    status=SpotTakeProfit.TradeStatus.POSITION,
+                )
+                created_tps.append(tp_o)
+                remaining_qty -= qty_p
+            except Exception as e:
+                logger.error(
+                    f"[tp] Spot TP #{idx} for {symbol} FAILED to place "
+                    f"(price={price_p}, qty={qty_p}): {e}",
+                    exc_info=True,
+                )
+                continue
+
+        if not created_tps:
+            logger.warning(
+                f"[tp] No spot TP orders were created for {symbol}, user={user.username}."
+            )
+
+        try:
+            created.stop_loss_status = SpotOrder.TradeStatus.CANCELLED
+            created.save(update_fields=["stop_loss_status"])
+        except Exception:
+            pass
+    # Attempt to place a protective stop-loss order for spot, unless disabled
+    elif not settings.DISABLE_SPOT_STOP_LOSS:
+        try:
+            if side == "buy":
+                sl_side = "sell"
+                amount = float(created.final_quantity) or float(quantity)
+                sl_price = (
+                    float(sl) if sl else compute_default_sl(avg_price, side)
+                )
+                # Binance spot typically uses STOP_LOSS_LIMIT; set price equal to stopPrice (tight limit)
+                params = {
+                    "stopPrice": float(exchange.priceToPrecision(symbol, sl_price))
+                }
+                limit_price = params["stopPrice"]  # simple approximation
+                # Place protective stop as limit stop to increase acceptance on spot markets
+                sl_created = exchange.create_order(
+                    symbol=symbol,
+                    side=sl_side,
+                    type="STOP_LOSS_LIMIT",
+                    amount=float(exchange.amountToPrecision(symbol, amount)),
+                    price=float(exchange.priceToPrecision(symbol, limit_price)),
+                    params=params,
+                )
+                try:
+                    created.stop_loss_order_id = sl_created.get("id", "")
+                    created.stop_loss_price = params["stopPrice"]
+                    created.stop_loss_status = SpotOrder.TradeStatus.POSITION
+                    created.save(
+                        update_fields=[
+                            "stop_loss_order_id",
+                            "stop_loss_price",
+                            "stop_loss_status",
+                        ]
+                    )
+                except Exception:
+                    pass
+        except Exception as e:
+            logger.warning(f"Failed to place spot stop-loss for {symbol}: {e}")
+    else:
+        try:
+            created.stop_loss_status = SpotOrder.TradeStatus.CANCELLED
+            created.save(update_fields=["stop_loss_status"])
+        except Exception:
+            pass
+
+    # Optional DCA (average-down): a resting LIMIT buy below entry,
+    # same quantity as the initial fill. When it fills, refresh_spot_order
+    # recalculates order_quantity/entry_price and resizes open TPs.
+    if side == "buy" and dca is not None:
+        try:
+            dca_price_val = float(dca)
+            if dca_price_val >= cur:
+                logger.error(
+                    f"[dca] Invalid DCA price for {symbol}: dca={dca_price_val}, "
+                    f"current={cur} (must be below current price for a spot long)"
+                )
+            else:
+                dca_qty_p = float(exchange.amountToPrecision(symbol, quantity))
+                dca_price_p = float(exchange.priceToPrecision(symbol, dca_price_val))
+                if min_amount and dca_qty_p < min_amount:
+                    logger.warning(
+                        f"[dca] DCA order for {symbol} skipped: qty {dca_qty_p} "
+                        f"below exchange min_amount {min_amount}"
+                    )
+                elif min_cost and (dca_qty_p * dca_price_p) < min_cost:
+                    logger.warning(
+                        f"[dca] DCA order for {symbol} skipped: notional "
+                        f"{dca_qty_p * dca_price_p} below exchange min_cost {min_cost}"
+                    )
+                else:
+                    dca_o = exchange.create_order(
+                        symbol=symbol,
+                        side="buy",
+                        type="limit",
+                        amount=dca_qty_p,
+                        price=dca_price_p,
+                    )
+                    created.dca_order_id = dca_o.get("id", "")
+                    created.dca_price = dca_price_p
+                    created.dca_quantity = dca_qty_p
+                    created.dca_status = SpotOrder.TradeStatus.POSITION
+                    created.save(
+                        update_fields=[
+                            "dca_order_id",
+                            "dca_price",
+                            "dca_quantity",
+                            "dca_status",
+                        ]
+                    )
+        except Exception as e:
+            logger.error(
+                f"[dca] Failed to place DCA order for {symbol}: {e}",
+                exc_info=True,
+            )
+
+
+
 def create_binance_spot_order(
     side: str,
     symbol: str,
@@ -27,9 +241,18 @@ def create_binance_spot_order(
     tps: list | None = None,
     dca: float | None = None,
     position_pct: float | None = None,
+    order_type: str = "market",
+    entry: float | None = None,
 ):
+    """order_type="limit" (with `entry`, buy only) rests a GTC limit buy and
+    records a SpotOrder in OPEN status holding the SL/TP/DCA plan; those are
+    placed by activate_filled_spot_limit_order once the refresh job sees it
+    filled. Any other order_type enters at market."""
     try:
         side = side.lower()
+        is_limit, entry = parse_limit_entry(order_type, entry, symbol)
+        if is_limit and (entry is None or side != "buy"):
+            return False
         # Per-user, UI-configurable in Risk Settings; an explicit arg (if
         # ever passed by a caller) still takes precedence over the saved
         # default.
@@ -71,7 +294,8 @@ def create_binance_spot_order(
                 # For buy orders, we use USDT balance
                 user_balance = balance["free"]["USDT"]
                 user_usable_balance = user_balance * position / 100
-                quantity = user_usable_balance / current_price_of_symbol
+                # Size off the price we'll actually fill at.
+                quantity = user_usable_balance / (entry if is_limit else current_price_of_symbol)
             else:
                 # For sell orders, we use the available crypto balance
                 base_currency = market["base"]
@@ -88,7 +312,7 @@ def create_binance_spot_order(
 
             # Check minimum notional value (price * quantity)
             min_notional = float(market["limits"]["cost"]["min"])
-            notional_value = quantity * current_price_of_symbol
+            notional_value = quantity * (entry if is_limit else current_price_of_symbol)
             if notional_value < min_notional:
                 logger.error(
                     f"Order notional value {notional_value} is below minimum {min_notional} for {symbol}"
@@ -101,6 +325,36 @@ def create_binance_spot_order(
             if quantity <= 0:
                 logger.error(f"Insufficient balance for {symbol} {side} order")
                 return False
+
+            if is_limit:
+                entry = float(exchange.priceToPrecision(symbol, entry))
+                order = exchange.create_order(
+                    symbol=symbol,
+                    side=side,
+                    type="limit",
+                    amount=quantity,
+                    price=entry,
+                    params={"timeInForce": "GTC"},
+                )
+                logger.info(f"[limit] spot entry order: {order}")
+                SpotOrder.objects.create(
+                    order_id=order["id"],
+                    status=SpotOrder.TradeStatus.OPEN,
+                    entry_price=entry,
+                    direction=SpotOrder.TradeDirection.LONG,
+                    order_quantity=quantity,
+                    final_quantity=0,
+                    symbol=symbol,
+                    is_spot=True,
+                    total_cost=notional_value,
+                    exchange=SpotOrder.ExchangeType.BINANCE,
+                    stop_loss_status=SpotOrder.TradeStatus.CANCELLED,
+                    pending_sl=sl,
+                    pending_tps=build_pending_tps(tps, tp),
+                    pending_dca=dca,
+                    user=user,
+                )
+                return True
 
             order = exchange.create_order(
                 symbol=symbol, side=side, type="market", amount=quantity
@@ -159,208 +413,10 @@ def create_binance_spot_order(
                 user=user,
             )
 
-            cur = float(current_price_of_symbol)
-            min_amount = float(market["limits"]["amount"]["min"])
-            min_cost = float(market["limits"]["cost"]["min"])
-
-            # Signals carrying tp/tps are limit-TP-only: place resting LIMIT
-            # sell orders at each target and skip stop-loss entirely (no sl
-            # field is sent for these, and we don't synthesize a default).
-            # Legacy signals with neither tp nor tps keep the original
-            # single protective stop-loss behavior below.
-            if side == "buy" and (tps or tp is not None):
-                base_qty = float(created.final_quantity or quantity)
-                tp_defs = list(tps) if tps else [{"price": tp, "percent": 100.0}]
-
-                created_tps = []
-                # Each leg's quantity gets rounded independently via
-                # amountToPrecision, so the legs can sum to slightly less
-                # than base_qty — leaving a dust remainder with no TP sized
-                # to close it, or the declared percents might simply not
-                # add up to 100% in the first place. Give the last leg
-                # whatever's actually left instead of its own percent
-                # share, unconditionally, so the position always fully
-                # closes via TPs no matter what the percents were.
-                remaining_qty = base_qty
-                for idx, tp_def in enumerate(tp_defs):
-                    try:
-                        p = float(tp_def.get("price"))
-                        pct = float(tp_def.get("percent"))
-                    except Exception as e:
-                        logger.error(
-                            f"[tp] Spot TP #{idx} for {symbol} has invalid price/percent: {tp_def} ({e})"
-                        )
-                        continue
-                    if pct <= 0:
-                        logger.warning(
-                            f"[tp] Spot TP #{idx} for {symbol} skipped: percent<=0 ({pct})"
-                        )
-                        continue
-                    if p <= cur:
-                        # Skip just this leg rather than raise — the order
-                        # row is already persisted above, and an uncaught
-                        # exception here would abort the remaining TPs plus
-                        # the SL/DCA placement below for an otherwise-fine
-                        # position.
-                        logger.error(
-                            f"[tp] Spot TP #{idx} for {symbol} invalid: price {p} <= current {cur}. "
-                            f"Skipping this TP."
-                        )
-                        continue
-                    is_last = idx == len(tp_defs) - 1
-                    if is_last:
-                        part_qty = max(remaining_qty, 0)
-                    else:
-                        part_qty = base_qty * (pct / 100.0)
-                    qty_p = float(exchange.amountToPrecision(symbol, part_qty))
-                    price_p = float(exchange.priceToPrecision(symbol, p))
-                    if qty_p <= 0:
-                        logger.warning(
-                            f"[tp] Spot TP #{idx} for {symbol} skipped: rounded qty is 0"
-                        )
-                        continue
-                    if min_amount and qty_p < min_amount:
-                        logger.warning(
-                            f"[tp] Spot TP #{idx} for {symbol} skipped: qty {qty_p} "
-                            f"below exchange min_amount {min_amount}"
-                        )
-                        continue
-                    if min_cost and (qty_p * price_p) < min_cost:
-                        logger.warning(
-                            f"[tp] Spot TP #{idx} for {symbol} skipped: notional "
-                            f"{qty_p * price_p} below exchange min_cost {min_cost}"
-                        )
-                        continue
-                    try:
-                        tp_o = exchange.create_order(
-                            symbol=symbol,
-                            side="sell",
-                            type="limit",
-                            amount=qty_p,
-                            price=price_p,
-                        )
-                        SpotTakeProfit.objects.create(
-                            order=created,
-                            tp_order_id=tp_o.get("id", ""),
-                            price=price_p,
-                            percent=pct,
-                            quantity=qty_p,
-                            status=SpotTakeProfit.TradeStatus.POSITION,
-                        )
-                        created_tps.append(tp_o)
-                        remaining_qty -= qty_p
-                    except Exception as e:
-                        logger.error(
-                            f"[tp] Spot TP #{idx} for {symbol} FAILED to place "
-                            f"(price={price_p}, qty={qty_p}): {e}",
-                            exc_info=True,
-                        )
-                        continue
-
-                if not created_tps:
-                    logger.warning(
-                        f"[tp] No spot TP orders were created for {symbol}, user={user.username}."
-                    )
-
-                try:
-                    created.stop_loss_status = SpotOrder.TradeStatus.CANCELLED
-                    created.save(update_fields=["stop_loss_status"])
-                except Exception:
-                    pass
-            # Attempt to place a protective stop-loss order for spot, unless disabled
-            elif not settings.DISABLE_SPOT_STOP_LOSS:
-                try:
-                    if side == "buy":
-                        sl_side = "sell"
-                        amount = float(created.final_quantity) or float(quantity)
-                        sl_price = (
-                            float(sl) if sl else compute_default_sl(order["average"], side)
-                        )
-                        # Binance spot typically uses STOP_LOSS_LIMIT; set price equal to stopPrice (tight limit)
-                        params = {
-                            "stopPrice": float(exchange.priceToPrecision(symbol, sl_price))
-                        }
-                        limit_price = params["stopPrice"]  # simple approximation
-                        # Place protective stop as limit stop to increase acceptance on spot markets
-                        sl_created = exchange.create_order(
-                            symbol=symbol,
-                            side=sl_side,
-                            type="STOP_LOSS_LIMIT",
-                            amount=float(exchange.amountToPrecision(symbol, amount)),
-                            price=float(exchange.priceToPrecision(symbol, limit_price)),
-                            params=params,
-                        )
-                        try:
-                            created.stop_loss_order_id = sl_created.get("id", "")
-                            created.stop_loss_price = params["stopPrice"]
-                            created.stop_loss_status = SpotOrder.TradeStatus.POSITION
-                            created.save(
-                                update_fields=[
-                                    "stop_loss_order_id",
-                                    "stop_loss_price",
-                                    "stop_loss_status",
-                                ]
-                            )
-                        except Exception:
-                            pass
-                except Exception as e:
-                    logger.warning(f"Failed to place spot stop-loss for {symbol}: {e}")
-            else:
-                try:
-                    created.stop_loss_status = SpotOrder.TradeStatus.CANCELLED
-                    created.save(update_fields=["stop_loss_status"])
-                except Exception:
-                    pass
-
-            # Optional DCA (average-down): a resting LIMIT buy below entry,
-            # same quantity as the initial fill. When it fills, refresh_spot_order
-            # recalculates order_quantity/entry_price and resizes open TPs.
-            if side == "buy" and dca is not None:
-                try:
-                    dca_price_val = float(dca)
-                    if dca_price_val >= cur:
-                        logger.error(
-                            f"[dca] Invalid DCA price for {symbol}: dca={dca_price_val}, "
-                            f"current={cur} (must be below current price for a spot long)"
-                        )
-                    else:
-                        dca_qty_p = float(exchange.amountToPrecision(symbol, quantity))
-                        dca_price_p = float(exchange.priceToPrecision(symbol, dca_price_val))
-                        if min_amount and dca_qty_p < min_amount:
-                            logger.warning(
-                                f"[dca] DCA order for {symbol} skipped: qty {dca_qty_p} "
-                                f"below exchange min_amount {min_amount}"
-                            )
-                        elif min_cost and (dca_qty_p * dca_price_p) < min_cost:
-                            logger.warning(
-                                f"[dca] DCA order for {symbol} skipped: notional "
-                                f"{dca_qty_p * dca_price_p} below exchange min_cost {min_cost}"
-                            )
-                        else:
-                            dca_o = exchange.create_order(
-                                symbol=symbol,
-                                side="buy",
-                                type="limit",
-                                amount=dca_qty_p,
-                                price=dca_price_p,
-                            )
-                            created.dca_order_id = dca_o.get("id", "")
-                            created.dca_price = dca_price_p
-                            created.dca_quantity = dca_qty_p
-                            created.dca_status = SpotOrder.TradeStatus.POSITION
-                            created.save(
-                                update_fields=[
-                                    "dca_order_id",
-                                    "dca_price",
-                                    "dca_quantity",
-                                    "dca_status",
-                                ]
-                            )
-                except Exception as e:
-                    logger.error(
-                        f"[dca] Failed to place DCA order for {symbol}: {e}",
-                        exc_info=True,
-                    )
+            place_binance_spot_protection(
+                exchange, created, market, symbol, side, quantity,
+                float(current_price_of_symbol), order["average"], sl, tp, tps, dca, user,
+            )
 
             logger.info(
                 f"Spot {side} order created for {user.username}: "
@@ -381,3 +437,47 @@ def create_binance_spot_order(
             f"Error creating spot order for {user.username}: {str(e)}", exc_info=True
         )
         return False
+
+
+def activate_filled_spot_limit_order(exchange, created, entry_order):
+    """Called by the refresh job once a resting limit buy (status OPEN) has
+    filled (fully, or partially then cancelled): records the real fill
+    (price/qty/fees), flips the order to POSITION, and places the
+    SL/TP/DCA plan stored at order time."""
+    symbol = created.symbol
+    market = exchange.market(symbol)
+    base_asset, quote_asset = market["base"], market["quote"]
+    executed_qty = float(entry_order.get("filled") or 0) or float(created.order_quantity)
+    avg_price = float(entry_order.get("average") or entry_order.get("price") or created.entry_price)
+    base_asset_fee, fee_value_in_quote = split_spot_order_fees(
+        entry_order, base_asset, quote_asset, avg_price
+    )
+    fee_info = entry_order.get("fee") or {}
+
+    created.entry_price = avg_price
+    created.order_quantity = executed_qty
+    created.final_quantity = executed_qty - base_asset_fee
+    created.entry_fee = float(fee_info.get("cost") or base_asset_fee)
+    created.entry_fee_currency = fee_info.get("currency") or (
+        base_asset if base_asset_fee else quote_asset
+    )
+    created.total_fee = fee_value_in_quote
+    created.total_cost = executed_qty * avg_price
+    created.status = SpotOrder.TradeStatus.POSITION
+    created.save()
+
+    place_binance_spot_protection(
+        exchange,
+        created,
+        market,
+        symbol,
+        "buy",
+        executed_qty,
+        avg_price,
+        avg_price,
+        float(created.pending_sl) if created.pending_sl is not None else None,
+        None,
+        created.pending_tps,
+        float(created.pending_dca) if created.pending_dca is not None else None,
+        created.user,
+    )

@@ -504,9 +504,12 @@ def history_view(request):
                 "pnl": float(o.pnl),
                 "pnl_pct": float(o.pnl_percentage),
                 "entry_price": float(o.entry_price),
-                "sl_price": float(o.stop_loss_price or 0),
-                "sl_status": o.stop_loss_status,
-                "tp_count": o.tps.count(),
+                "sl_price": float(
+                    (o.pending_sl if o.status == "OPEN" else o.stop_loss_price) or 0
+                ),
+                "sl_status": o.stop_loss_status if o.status != "OPEN" else "",
+                "pending_tps": o.pending_tps if o.status == "OPEN" else None,
+                "tp_count": len(o.pending_tps or []) if o.status == "OPEN" else o.tps.count(),
                 "tp_closed": o.tps.filter(status="CLOSED").count(),
                 "dca_price": float(o.dca_price or 0),
                 "dca_status": o.dca_status,

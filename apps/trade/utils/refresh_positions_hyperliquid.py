@@ -1,6 +1,8 @@
 from apps.accounts.models import UserHyperLiquidKey
 from apps.trade.models import FutureOrder, SpotOrder, FutureTakeProfit, SpotTakeProfit
 from apps.trade.utils.common import compute_default_sl, opposite_side
+from apps.trade.utils.create_market_hyperliquid_order import activate_filled_hyperliquid_limit_order
+from apps.trade.utils.create_market_hyperliquid_spot_order import activate_filled_hyperliquid_spot_limit_order
 from apps.trade.utils.hyperliquid_common import (
     make_hyperliquid_exchange,
     to_hyperliquid_symbol,
@@ -26,6 +28,43 @@ def _leg_pnl(direction, entry: Decimal, exit_price: Decimal, qty: Decimal) -> De
     return (entry - exit_price) * qty
 
 
+def _refresh_pending_hyperliquid_limit_order(order: FutureOrder) -> bool:
+    """Checks a resting HyperLiquid limit entry (status OPEN). Filled: record
+    the fill and place the SL/TPs. Cancelled/rejected with no fill: mark
+    CANCELLED. Otherwise leave it resting."""
+    try:
+        hl_key = UserHyperLiquidKey.objects.get(user=order.user, is_active=True)
+        ex = make_hyperliquid_exchange(
+            wallet_address=hl_key.get_master_wallet_address(),
+            private_key=hl_key.get_api_private_key(),
+        )
+        symbol = to_hyperliquid_symbol(order.symbol, "futures")
+        info = ex.fetch_order(id=order.order_id, symbol=symbol)
+        status = info.get("status")
+        filled = float(info.get("filled") or 0)
+        if status == "closed" and filled > 0 or (
+            status in ("canceled", "cancelled", "expired", "rejected") and filled > 0
+        ):
+            fill = fetch_hl_fill_data(ex, symbol).get(str(order.order_id)) or {}
+            activate_filled_hyperliquid_limit_order(
+                ex,
+                order,
+                filled,
+                fill.get("avg_price") or float(info.get("average") or 0),
+                fill.get("fee") or 0,
+            )
+            return True
+        if status in ("canceled", "cancelled", "expired", "rejected", "closed"):
+            order.status = FutureOrder.TradeStatus.CANCELLED
+            order.closed_at = timezone.now()
+            order.save()
+            return True
+        return False
+    except Exception as e:
+        logger.error(f"Failed to refresh pending HyperLiquid limit order {order.id}: {e}")
+        return False
+
+
 def refresh_hyperliquid_futures_order(order: FutureOrder) -> bool:
     """HyperLiquid equivalent of refresh_futures_order — see that function
     for the full behavior description. The only mechanical difference is
@@ -33,6 +72,8 @@ def refresh_hyperliquid_futures_order(order: FutureOrder) -> bool:
     cancelled via fetch_hl_order_status/cancel_hl_order instead of Binance's
     dedicated algo-order endpoint.
     """
+    if order.status == FutureOrder.TradeStatus.OPEN:
+        return _refresh_pending_hyperliquid_limit_order(order)
     if order.status != FutureOrder.TradeStatus.POSITION:
         return False
     try:
@@ -210,12 +251,49 @@ def refresh_hyperliquid_futures_order(order: FutureOrder) -> bool:
         return False
 
 
+def _refresh_pending_hyperliquid_spot_limit_order(order: SpotOrder) -> bool:
+    """Checks a resting HyperLiquid spot limit buy (status OPEN). Filled:
+    record the fill and place the TPs/SL/DCA. Cancelled/rejected with no
+    fill: mark CANCELLED. Otherwise leave it resting."""
+    try:
+        hl_key = UserHyperLiquidKey.objects.get(user=order.user, is_active=True)
+        ex = make_hyperliquid_exchange(
+            wallet_address=hl_key.get_master_wallet_address(),
+            private_key=hl_key.get_api_private_key(),
+        )
+        symbol = to_hyperliquid_symbol(order.symbol, "spot")
+        info = ex.fetch_order(id=order.order_id, symbol=symbol)
+        status = info.get("status")
+        filled = float(info.get("filled") or 0)
+        if filled > 0 and status in ("closed", "canceled", "cancelled", "expired", "rejected"):
+            fill = fetch_hl_fill_data(ex, symbol).get(str(order.order_id)) or {}
+            activate_filled_hyperliquid_spot_limit_order(
+                ex,
+                order,
+                filled,
+                fill.get("avg_price") or float(info.get("average") or 0),
+                fill.get("fee") or 0,
+            )
+            return True
+        if status in ("canceled", "cancelled", "expired", "rejected", "closed"):
+            order.status = SpotOrder.TradeStatus.CANCELLED
+            order.closed_at = timezone.now()
+            order.save()
+            return True
+        return False
+    except Exception as e:
+        logger.error(f"Failed to refresh pending HyperLiquid spot limit order {order.id}: {e}")
+        return False
+
+
 def refresh_hyperliquid_spot_order(order: SpotOrder) -> bool:
     """HyperLiquid equivalent of refresh_spot_order — see that function for
     the full behavior description (TP/SL/DCA reconciliation). HyperLiquid
     has no algo-order quirk, so both TP legs and the SL are queried via the
     same fetch_hl_order_status helper used for futures.
     """
+    if order.status == SpotOrder.TradeStatus.OPEN:
+        return _refresh_pending_hyperliquid_spot_limit_order(order)
     if order.status != SpotOrder.TradeStatus.POSITION:
         return False
     try:

@@ -6,14 +6,20 @@ from apps.trade.models import SpotOrder, FutureOrder
 from apps.trade.utils.create_market_order import create_binance_future_order
 from apps.trade.utils.close_order import quick_close_position, cancel_pending_limit_order
 
-from apps.trade.utils.close_market_order_spot import quick_close_spot_position
+from apps.trade.utils.close_market_order_spot import quick_close_spot_position, cancel_pending_spot_limit_order
 from apps.trade.utils.create_market_binance_spot_order import create_binance_spot_order
 from apps.trade.utils.refresh_positions import refresh_futures_order, refresh_spot_order
 
 from apps.trade.utils.create_market_hyperliquid_order import create_hyperliquid_future_order
 from apps.trade.utils.create_market_hyperliquid_spot_order import create_hyperliquid_spot_order
-from apps.trade.utils.close_order_hyperliquid import quick_close_hyperliquid_position
-from apps.trade.utils.close_market_order_spot_hyperliquid import quick_close_hyperliquid_spot_position
+from apps.trade.utils.close_order_hyperliquid import (
+    quick_close_hyperliquid_position,
+    cancel_pending_hyperliquid_limit_order,
+)
+from apps.trade.utils.close_market_order_spot_hyperliquid import (
+    quick_close_hyperliquid_spot_position,
+    cancel_pending_hyperliquid_spot_limit_order,
+)
 from apps.trade.utils.refresh_positions_hyperliquid import (
     refresh_hyperliquid_futures_order,
     refresh_hyperliquid_spot_order,
@@ -31,8 +37,26 @@ _BINANCE_EXCHANGES = (FutureOrder.ExchangeType.BINANCE, FutureOrder.ExchangeType
 _BINANCE_SPOT_EXCHANGES = (SpotOrder.ExchangeType.BINANCE, SpotOrder.ExchangeType.BINANCE_FUTURES)
 
 
+def _cancel_pending_spot_orders(user, symbol, exchange):
+    """Cancels this user's resting spot limit entries for `symbol` on the
+    signal's exchange."""
+    is_hl = exchange == "hyperliquid"
+    for pending in SpotOrder.objects.filter(
+        user=user,
+        symbol=symbol,
+        status=SpotOrder.TradeStatus.OPEN,
+        exchange__in=(
+            (SpotOrder.ExchangeType.HYPERLIQUID,) if is_hl else _BINANCE_SPOT_EXCHANGES
+        ),
+    ):
+        if is_hl:
+            cancel_pending_hyperliquid_spot_limit_order(pending)
+        else:
+            cancel_pending_spot_limit_order(pending)
+
+
 @celery_app.task(bind=True)
-def create_order_of_user_controller(self, side, symbol, market, sl=None, tp=None, tps=None, dca=None, exchange="binance"):
+def create_order_of_user_controller(self, side, symbol, market, sl=None, tp=None, tps=None, dca=None, exchange="binance", order_type="market", entry=None):
     try:
         if exchange == "hyperliquid":
             users_key = UserHyperLiquidKey.objects.filter(is_active=True)
@@ -40,7 +64,7 @@ def create_order_of_user_controller(self, side, symbol, market, sl=None, tp=None
             users_key = UserKey.objects.filter(is_active=True)
 
         for user_key in users_key:
-            create_order_of_user.delay(side, symbol, market, user_key.user.id, sl, tp, tps, dca, exchange)
+            create_order_of_user.delay(side, symbol, market, user_key.user.id, sl, tp, tps, dca, exchange, order_type, entry)
     except Exception as e:
         print(f"Error dispatching  order create: {str(e)}")
 
@@ -48,19 +72,24 @@ def create_order_of_user_controller(self, side, symbol, market, sl=None, tp=None
 @celery_app.task(
     bind=True, autoretry_for=(Exception,), retry_backoff=True, max_retries=3
 )
-def create_order_of_user(self, side, symbol, market, user_id, sl=None, tp=None, tps=None, dca=None, exchange="binance"):
+def create_order_of_user(self, side, symbol, market, user_id, sl=None, tp=None, tps=None, dca=None, exchange="binance", order_type="market", entry=None):
     try:
         user = User.objects.get(id=user_id)
+        if market != "futures":
+            # A resting limit buy for this symbol is superseded by any new
+            # buy signal (the one-position-per-symbol guard would otherwise
+            # block the replacement).
+            _cancel_pending_spot_orders(user, symbol, exchange)
         if exchange == "hyperliquid":
             if market == "futures":
                 create_hyperliquid_future_order(side, symbol, user, sl=sl, tp=tp, tps=tps)
             else:
-                create_hyperliquid_spot_order(side, symbol, user, sl=sl, tp=tp, tps=tps, dca=dca)
+                create_hyperliquid_spot_order(side, symbol, user, sl=sl, tp=tp, tps=tps, dca=dca, order_type=order_type, entry=entry)
         else:
             if market == "futures":
                 create_binance_future_order(side, symbol, user, sl=sl, tp=tp, tps=tps)
             else:
-                create_binance_spot_order(side, symbol, user, sl=sl, tp=tp, tps=tps, dca=dca)
+                create_binance_spot_order(side, symbol, user, sl=sl, tp=tp, tps=tps, dca=dca, order_type=order_type, entry=entry)
     except Exception as e:
         print("Caught exception:", e)
         raise self.retry(exc=e)
@@ -98,6 +127,13 @@ def close_order_of_user_controller(self, side, symbol, market, exchange="binance
             else SpotOrder.TradeDirection.SHORT
         )
         print(position_direction)
+        for pending in SpotOrder.objects.filter(
+            symbol=symbol,
+            status=SpotOrder.TradeStatus.OPEN,
+            ignore_opposite_signal=False,
+            exchange__in=exchange_spot,
+        ):
+            quick_cancel_pending_spot_order.delay(order_id=pending.id)
         orders = SpotOrder.objects.filter(
             symbol=symbol,
             status=SpotOrder.TradeStatus.POSITION,
@@ -108,6 +144,18 @@ def close_order_of_user_controller(self, side, symbol, market, exchange="binance
         print(orders)
         for order in orders:
             quick_close_user_order.delay(order_id=order.id, market=market)
+
+
+@celery_app.task(bind=True)
+def quick_cancel_pending_spot_order(self, order_id):
+    try:
+        order = SpotOrder.objects.get(id=order_id, status=SpotOrder.TradeStatus.OPEN)
+    except SpotOrder.DoesNotExist:
+        return
+    if order.exchange == SpotOrder.ExchangeType.HYPERLIQUID:
+        cancel_pending_hyperliquid_spot_limit_order(order)
+    else:
+        cancel_pending_spot_limit_order(order)
 
 
 @celery_app.task(
@@ -156,11 +204,13 @@ def handle_futures_signal(self, side, symbol, user_id, sl=None, tp=None, tps=Non
         )
         # A resting limit entry for this symbol is superseded by any new
         # signal: cancel it (same-direction signals just replace it).
-        if exchange != "hyperliquid":
-            for pending in FutureOrder.objects.filter(
-                user=user, symbol=symbol, status=FutureOrder.TradeStatus.OPEN,
-                exchange__in=exchange_futures,
-            ):
+        for pending in FutureOrder.objects.filter(
+            user=user, symbol=symbol, status=FutureOrder.TradeStatus.OPEN,
+            exchange__in=exchange_futures,
+        ):
+            if exchange == "hyperliquid":
+                cancel_pending_hyperliquid_limit_order(pending)
+            else:
                 cancel_pending_limit_order(pending)
         # find any open positions for user+symbol on this signal's exchange
         open_orders = FutureOrder.objects.filter(
@@ -173,7 +223,7 @@ def handle_futures_signal(self, side, symbol, user_id, sl=None, tp=None, tps=Non
         if not open_orders.exists():
             # No open trade: open new
             if exchange == "hyperliquid":
-                create_hyperliquid_future_order(side, symbol, user, sl=sl, tp=tp, tps=tps)
+                create_hyperliquid_future_order(side, symbol, user, sl=sl, tp=tp, tps=tps, order_type=order_type, entry=entry)
             else:
                 create_binance_future_order(side, symbol, user, sl=sl, tp=tp, tps=tps, order_type=order_type, entry=entry)
             return
@@ -192,7 +242,7 @@ def handle_futures_signal(self, side, symbol, user_id, sl=None, tp=None, tps=Non
         # Opposite signal: close then open new
         if exchange == "hyperliquid":
             quick_close_hyperliquid_position(order=existing, user=user)
-            create_hyperliquid_future_order(side, symbol, user, sl=sl, tp=tp, tps=tps)
+            create_hyperliquid_future_order(side, symbol, user, sl=sl, tp=tp, tps=tps, order_type=order_type, entry=entry)
         else:
             quick_close_position(order=existing, user=user)
             create_binance_future_order(side, symbol, user, sl=sl, tp=tp, tps=tps, order_type=order_type, entry=entry)
@@ -237,7 +287,9 @@ def refresh_single_future_position(self, order_id):
 def refresh_all_spot_positions(self):
     """Beat-scheduled controller: fan out one refresh task per open spot position."""
     try:
-        open_orders = SpotOrder.objects.filter(status=SpotOrder.TradeStatus.POSITION)
+        open_orders = SpotOrder.objects.filter(
+            status__in=[SpotOrder.TradeStatus.POSITION, SpotOrder.TradeStatus.OPEN]
+        )
         for order in open_orders:
             refresh_single_spot_position.delay(order.id)
     except Exception as e:

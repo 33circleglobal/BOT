@@ -8,6 +8,27 @@ from django.utils import timezone
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+def cancel_pending_spot_limit_order(order: SpotOrder):
+    """Cancels a resting Binance spot limit entry (status OPEN) and marks it
+    CANCELLED. If it filled in the meantime, leaves it for the refresh job
+    to activate (SL/TP/DCA) instead."""
+    try:
+        key = UserKey.objects.get(user=order.user, is_active=True)
+        exchange = make_spot_exchange(api_key=key.api_key, api_secret=key.api_secret)
+        info = exchange.fetch_order(order.order_id, order.symbol)
+        if info.get("status") == "open":
+            exchange.cancel_order(order.order_id, order.symbol)
+        elif info.get("status") == "closed" or float(info.get("filled") or 0) > 0:
+            return False
+        order.status = SpotOrder.TradeStatus.CANCELLED
+        order.closed_at = timezone.now()
+        order.save()
+        return True
+    except Exception as e:
+        logger.error(f"Could not cancel pending spot limit order {order.id}: {e}", exc_info=True)
+        return False
+
+
 def quick_close_spot_position(order: SpotOrder, user: User):
     try:
         # Validate order type

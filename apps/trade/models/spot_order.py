@@ -75,6 +75,13 @@ class SpotOrder(models.Model):
         max_length=20, choices=TradeStatus.choices, default=TradeStatus.CANCELLED
     )
 
+    # Resting limit-entry orders (status OPEN): the SL/TP/DCA plan is stored
+    # here until the entry fills, then placed by activate_filled_spot_limit_order
+    # (Binance) / activate_filled_hyperliquid_spot_limit_order (HyperLiquid).
+    pending_sl = models.DecimalField(max_digits=20, decimal_places=10, null=True, blank=True)
+    pending_tps = models.JSONField(null=True, blank=True)
+    pending_dca = models.DecimalField(max_digits=20, decimal_places=10, null=True, blank=True)
+
     # If true, ignore opposite webhook signals; user will close manually
     ignore_opposite_signal = models.BooleanField(default=False)
 

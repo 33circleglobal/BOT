@@ -88,8 +88,12 @@ def can_open_spot_position(user, symbol, exchange=None):
             f"{limits.max_market_data_age_minutes}m); refusing new spot positions"
         )
 
+    # Resting limit entries (OPEN) count too, same as futures.
     open_positions = _scope_by_exchange(
-        SpotOrder.objects.filter(user=user, status=SpotOrder.TradeStatus.POSITION),
+        SpotOrder.objects.filter(
+            user=user,
+            status__in=[SpotOrder.TradeStatus.POSITION, SpotOrder.TradeStatus.OPEN],
+        ),
         exchange,
     )
 

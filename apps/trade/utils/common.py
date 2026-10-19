@@ -128,3 +128,31 @@ def split_spot_order_fees(
         else:
             fee_value_in_quote += cost
     return base_asset_fee, fee_value_in_quote
+
+
+def build_pending_tps(tps, tp):
+    """Normalize a signal's tp/tps into the JSON plan stored on a resting
+    limit entry (pending_tps), or None when there are no targets."""
+    if tps:
+        return [
+            {"price": float(t["price"]), "percent": float(t["percent"])} for t in tps
+        ]
+    if tp is not None:
+        return [{"price": float(tp), "percent": 100.0}]
+    return None
+
+
+def parse_limit_entry(order_type, entry, symbol):
+    """Returns (is_limit, entry_price). is_limit is True only for
+    order_type == "limit"; entry_price is None if it's absent/invalid, in
+    which case callers must refuse the order (returns (True, None))."""
+    if str(order_type or "").lower() != "limit":
+        return False, None
+    try:
+        entry = float(entry)
+        if entry <= 0:
+            raise ValueError
+    except (TypeError, ValueError):
+        logger.error(f"[limit] Invalid entry price {entry!r} for {symbol}, skipping order.")
+        return True, None
+    return True, entry

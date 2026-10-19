@@ -16,7 +16,7 @@ from apps.trade.task import (
 
 from apps.trade.models import FutureOrder, FutureTakeProfit, TradeSettings, WebhookLog
 from apps.trade.forms import TradeSettingsForm
-from apps.accounts.models import UserKey
+from apps.accounts.models import UserKey, UserHyperLiquidKey
 from apps.trade.utils.common import (
     make_futures_exchange,
     make_spot_exchange,
@@ -24,11 +24,18 @@ from apps.trade.utils.common import (
     opposite_side,
 )
 from apps.trade.utils.close_order import quick_close_position, cancel_algo_order, cancel_pending_limit_order
-from apps.trade.utils.close_market_order_spot import quick_close_spot_position
+from apps.trade.utils.close_market_order_spot import quick_close_spot_position, cancel_pending_spot_limit_order
 from apps.trade.utils.create_market_order import create_algo_order
 from apps.trade.utils.refresh_positions import refresh_futures_order, refresh_spot_order
-from apps.trade.utils.close_order_hyperliquid import quick_close_hyperliquid_position
-from apps.trade.utils.close_market_order_spot_hyperliquid import quick_close_hyperliquid_spot_position
+from apps.trade.utils.close_order_hyperliquid import (
+    quick_close_hyperliquid_position,
+    cancel_pending_hyperliquid_limit_order,
+)
+from apps.trade.utils.hyperliquid_common import make_hyperliquid_exchange, to_hyperliquid_symbol
+from apps.trade.utils.close_market_order_spot_hyperliquid import (
+    quick_close_hyperliquid_spot_position,
+    cancel_pending_hyperliquid_spot_limit_order,
+)
 from apps.trade.utils.refresh_positions_hyperliquid import (
     refresh_hyperliquid_futures_order,
     refresh_hyperliquid_spot_order,
@@ -146,7 +153,7 @@ def trading_view_webhook(request):
             handle_futures_signal_controller.delay(side, symbol, sl, tp, tps, exchange, order_type, entry)
         else:
             if side == "buy":
-                create_order_of_user_controller.delay(side, symbol, market, sl, tp, tps, dca, exchange)
+                create_order_of_user_controller.delay(side, symbol, market, sl, tp, tps, dca, exchange, order_type, entry)
             else:
                 close_order_of_user_controller.delay(side, symbol, market, exchange)
 
@@ -624,30 +631,84 @@ def update_futures_multi_tp(request):
     return redirect("accounts:history")
 
 
+def _get_pending_order(request):
+    """Resolves the OPEN limit entry named by the POST (market=Futures|Spot,
+    default Futures) for the current user. Returns (order, None) or
+    (None, redirect_response)."""
+    order_id = request.POST.get("order_id")
+    model = SpotOrder if request.POST.get("market") == "Spot" else FutureOrder
+    try:
+        return (
+            model.objects.get(
+                id=order_id, user=request.user, status=model.TradeStatus.OPEN
+            ),
+            None,
+        )
+    except (model.DoesNotExist, ValueError):
+        messages.error(request, "Order not found or no longer pending")
+        return None, redirect("accounts:history")
+
+
+def _amend_pending_entry(order, new_entry):
+    """Moves a resting limit entry to `new_entry` on its exchange and returns
+    the (rounded) price. Raises ValueError if it already filled/closed."""
+    is_spot = isinstance(order, SpotOrder)
+    is_hl = order.exchange == order.ExchangeType.HYPERLIQUID
+    is_long = order.direction == order.TradeDirection.LONG
+    side = "buy" if is_long else "sell"
+    if is_hl:
+        user_key = UserHyperLiquidKey.objects.get(user=order.user, is_active=True)
+        ex = make_hyperliquid_exchange(
+            wallet_address=user_key.get_master_wallet_address(),
+            private_key=user_key.get_api_private_key(),
+        )
+        symbol = to_hyperliquid_symbol(order.symbol, "spot" if is_spot else "futures")
+        tif = {"timeInForce": "Gtc"}
+    else:
+        user_key = UserKey.objects.get(user=order.user, is_active=True)
+        ex = (make_spot_exchange if is_spot else make_futures_exchange)(
+            api_key=user_key.api_key, api_secret=user_key.api_secret
+        )
+        symbol = order.symbol
+        tif = {"timeInForce": "GTC"}
+
+    new_entry = float(ex.priceToPrecision(symbol, new_entry))
+    if new_entry == float(order.entry_price):
+        return new_entry
+    info = ex.fetch_order(order.order_id, symbol)
+    if info.get("status") != "open" or float(info.get("filled") or 0) > 0:
+        raise ValueError("Order already filled/closed on the exchange; refresh it instead.")
+    amount = float(info.get("amount") or order.order_quantity)
+    if is_spot and not is_hl:
+        # Binance spot's edit is a cancel+replace under a new order id, so do
+        # it explicitly and keep our id in sync.
+        ex.cancel_order(order.order_id, symbol)
+        new_order = ex.create_order(symbol, "limit", side, amount, new_entry, tif)
+        order.order_id = str(new_order["id"])
+    else:
+        edited = ex.edit_order(order.order_id, symbol, "limit", side, amount, new_entry, tif)
+        # HyperLiquid's modify can hand back a new oid.
+        if is_hl and edited and edited.get("id"):
+            order.order_id = str(edited["id"])
+    order.entry_price = new_entry
+    return new_entry
+
+
 @login_required
 def edit_pending_futures_order(request):
-    """Edit the entry price and/or planned SL of a resting Binance limit entry
-    (status OPEN). The entry is amended in place on Binance; the SL is only
-    stored (pending_sl) since it's placed once the entry fills."""
+    """Edit the entry price and/or planned SL of a resting limit entry
+    (status OPEN) — Binance/HyperLiquid, futures or spot. The entry is
+    amended in place on the exchange; the SL is only stored (pending_sl)
+    since it's placed once the entry fills."""
     if request.method != "POST":
         return HttpResponseBadRequest("Invalid method")
-    order_id = request.POST.get("order_id")
-    if not order_id:
+    if not request.POST.get("order_id"):
         return HttpResponseBadRequest("Missing order_id")
-    try:
-        order = FutureOrder.objects.get(
-            id=order_id,
-            user=request.user,
-            status=FutureOrder.TradeStatus.OPEN,
-        )
-    except FutureOrder.DoesNotExist:
-        messages.error(request, "Order not found or no longer pending")
-        return redirect("accounts:history")
-    if order.exchange == FutureOrder.ExchangeType.HYPERLIQUID:
-        messages.error(request, "Editing is only supported for Binance futures")
-        return redirect("accounts:history")
+    order, err = _get_pending_order(request)
+    if err:
+        return err
 
-    is_long = order.direction == FutureOrder.TradeDirection.LONG
+    is_long = order.direction == order.TradeDirection.LONG
     try:
         entry_raw = (request.POST.get("entry") or "").strip()
         sl_raw = (request.POST.get("sl") or "").strip()
@@ -669,32 +730,9 @@ def edit_pending_futures_order(request):
         return redirect("accounts:history")
 
     try:
-        user_key = UserKey.objects.get(user=request.user, is_active=True)
-        ex = make_futures_exchange(
-            api_key=user_key.api_key, api_secret=user_key.api_secret
-        )
-        new_entry = float(ex.priceToPrecision(order.symbol, new_entry))
-        if new_entry != float(order.entry_price):
-            info = ex.fetch_order(order.order_id, order.symbol)
-            if info.get("status") != "open" or float(info.get("filled") or 0) > 0:
-                messages.error(
-                    request,
-                    "Order already filled/closed on the exchange; refresh it instead.",
-                )
-                return redirect("accounts:history")
-            side = "buy" if is_long else "sell"
-            ex.edit_order(
-                order.order_id,
-                order.symbol,
-                "limit",
-                side,
-                float(info.get("amount") or order.order_quantity),
-                new_entry,
-                {"timeInForce": "GTC"},
-            )
-            order.entry_price = new_entry
+        order.entry_price = _amend_pending_entry(order, new_entry)
         order.pending_sl = new_sl
-        order.save(update_fields=["entry_price", "pending_sl"])
+        order.save(update_fields=["order_id", "entry_price", "pending_sl"])
         messages.success(request, "Pending order updated")
     except Exception as e:
         messages.error(request, f"Failed to update pending order: {e}")
@@ -705,19 +743,17 @@ def edit_pending_futures_order(request):
 def cancel_pending_futures_order(request):
     if request.method != "POST":
         return HttpResponseBadRequest("Invalid method")
-    order_id = request.POST.get("order_id")
-    if not order_id:
+    if not request.POST.get("order_id"):
         return HttpResponseBadRequest("Missing order_id")
-    try:
-        order = FutureOrder.objects.get(
-            id=order_id,
-            user=request.user,
-            status=FutureOrder.TradeStatus.OPEN,
-        )
-    except FutureOrder.DoesNotExist:
-        messages.error(request, "Order not found or no longer pending")
-        return redirect("accounts:history")
-    if cancel_pending_limit_order(order):
+    order, err = _get_pending_order(request)
+    if err:
+        return err
+    is_hl = order.exchange == order.ExchangeType.HYPERLIQUID
+    if isinstance(order, SpotOrder):
+        cancel = cancel_pending_hyperliquid_spot_limit_order if is_hl else cancel_pending_spot_limit_order
+    else:
+        cancel = cancel_pending_hyperliquid_limit_order if is_hl else cancel_pending_limit_order
+    if cancel(order):
         messages.success(request, "Pending order cancelled")
     else:
         messages.error(
@@ -797,7 +833,9 @@ def refresh_order(request):
                 updated = refresh_futures_order(order)
         else:
             order = SpotOrder.objects.get(
-                id=order_id, user=request.user, status=SpotOrder.TradeStatus.POSITION
+                id=order_id,
+                user=request.user,
+                status__in=[SpotOrder.TradeStatus.POSITION, SpotOrder.TradeStatus.OPEN],
             )
             if order.exchange == SpotOrder.ExchangeType.HYPERLIQUID:
                 updated = refresh_hyperliquid_spot_order(order)

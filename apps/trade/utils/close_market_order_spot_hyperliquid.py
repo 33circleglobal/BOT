@@ -15,6 +15,31 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 
+def cancel_pending_hyperliquid_spot_limit_order(order: SpotOrder):
+    """Cancels a resting HyperLiquid spot limit entry (status OPEN) and marks
+    it CANCELLED. If it filled in the meantime, leaves it for the refresh
+    job to activate (SL/TP/DCA) instead."""
+    try:
+        hl_key = UserHyperLiquidKey.objects.get(user=order.user, is_active=True)
+        exchange = make_hyperliquid_exchange(
+            wallet_address=hl_key.get_master_wallet_address(),
+            private_key=hl_key.get_api_private_key(),
+        )
+        symbol = to_hyperliquid_symbol(order.symbol, "spot")
+        info = exchange.fetch_order(id=order.order_id, symbol=symbol)
+        if info.get("status") == "open":
+            exchange.cancel_order(id=order.order_id, symbol=symbol)
+        elif info.get("status") == "closed" or float(info.get("filled") or 0) > 0:
+            return False
+        order.status = SpotOrder.TradeStatus.CANCELLED
+        order.closed_at = timezone.now()
+        order.save()
+        return True
+    except Exception as e:
+        logger.error(f"Could not cancel pending HyperLiquid spot limit order {order.id}: {e}", exc_info=True)
+        return False
+
+
 def quick_close_hyperliquid_spot_position(order: SpotOrder, user: User):
     try:
         if not order.is_spot:

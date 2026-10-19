@@ -9,6 +9,7 @@ from apps.trade.utils.common import (
 )
 from apps.trade.utils.close_order import cancel_algo_order
 from apps.trade.utils.create_market_order import create_algo_order, activate_filled_limit_order
+from apps.trade.utils.create_market_binance_spot_order import activate_filled_spot_limit_order
 
 import logging
 from django.utils import timezone
@@ -291,6 +292,36 @@ def refresh_futures_order(order: FutureOrder) -> bool:
         return False
 
 
+def _refresh_pending_spot_limit_order(order: SpotOrder) -> bool:
+    """Checks a resting spot limit buy (status OPEN). Fully filled: record the
+    fill and place the TPs/SL/DCA (activate_filled_spot_limit_order).
+    Cancelled/expired/rejected with no fill: mark CANCELLED. Otherwise leave
+    it resting (a partial fill is waited out until complete or cancelled)."""
+    try:
+        user_key = UserKey.objects.get(user=order.user, is_active=True)
+        ex = make_spot_exchange(
+            api_key=user_key.api_key, api_secret=user_key.api_secret
+        )
+        info = ex.fetch_order(order.order_id, order.symbol)
+        status = info.get("status")
+        if status == "closed":
+            activate_filled_spot_limit_order(ex, order, info)
+            return True
+        if status in ("canceled", "cancelled", "expired", "rejected"):
+            if float(info.get("filled") or 0) > 0:
+                # Cancelled after a partial fill: keep what filled as the position.
+                activate_filled_spot_limit_order(ex, order, info)
+            else:
+                order.status = SpotOrder.TradeStatus.CANCELLED
+                order.closed_at = timezone.now()
+                order.save()
+            return True
+        return False
+    except Exception as e:
+        logger.error(f"Failed to refresh pending spot limit order {order.id}: {e}")
+        return False
+
+
 def refresh_spot_order(order: SpotOrder) -> bool:
     """Sync one open spot position with the exchange.
 
@@ -314,6 +345,8 @@ def refresh_spot_order(order: SpotOrder) -> bool:
     TP-based spot signals are placed without a stop-loss in the first place
     (see create_binance_spot_order), so there's nothing to reprice here.
     """
+    if order.status == SpotOrder.TradeStatus.OPEN:
+        return _refresh_pending_spot_limit_order(order)
     if order.status != SpotOrder.TradeStatus.POSITION:
         return False
     try:
