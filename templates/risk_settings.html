@@ -61,7 +61,65 @@
           {% endif %}
         </div>
 
-        <div class="col-12"><h6 class="text-uppercase text-muted small mt-2">Futures</h6></div>
+        <div class="col-12"><hr><h6 class="text-uppercase text-muted small mt-2">HyperLiquid settings (122Moon V3.2) &mdash; separate from Binance</h6></div>
+        <div class="col-12 col-md-4">
+          <label class="form-label">HyperLiquid trading mode</label>
+          <div class="form-control-plaintext fw-semibold">{{ hl.mode }}</div>
+          <div class="form-text">
+            Set from your HyperLiquid <a href="{% url 'accounts:profile' %}">API key settings</a>, not here.
+            To change it, change it there and these values update automatically from the latest
+            controller update. Disabling a market blocks new entries there and cancels unfilled
+            entry orders; existing positions and their stops/exits are kept.
+          </div>
+          <div class="form-check form-switch mt-3">
+            {{ form.hl_sync_from_webhook }}
+            <label class="form-check-label" for="{{ form.hl_sync_from_webhook.id_for_label }}">{{ form.hl_sync_from_webhook.label }}</label>
+          </div>
+          <div class="form-text">Off = the manual caps and position sizes below apply (on = the controller\'s 15% spot / 10% futures-margin and caps). Hard limits and the freshness check always apply.</div>
+          <div class="row g-2 mt-1">
+            {% for f in form %}{% if f.name == "hl_spot_max_positions" or f.name == "hl_futures_max_long" or f.name == "hl_futures_max_short" or f.name == "hl_futures_max_positions" or f.name == "hl_futures_leverage" or f.name == "hl_spot_trade_pct" or f.name == "hl_futures_margin_pct" %}
+              <div class="col-6"><label class="form-label small">{{ f.label }}</label>{{ f }}
+              {% for error in f.errors %}<div class="text-danger small">{{ error }}</div>{% endfor %}</div>
+            {% endif %}{% endfor %}
+          </div>
+        </div>
+        <div class="col-12 col-md-8">
+          {% if hl.snapshot %}
+            <div class="alert {% if hl.fresh %}alert-success{% else %}alert-danger{% endif %} py-2 px-3 mb-2">
+              <strong>{% if hl.fresh %}Controller feed fresh{% else %}Controller feed stale &mdash; new HyperLiquid entries blocked{% endif %}</strong><br>
+              Event <code>{{ hl.snapshot.event_id }}</code> ({{ hl.snapshot.release_version }}),
+              regime {{ hl.snapshot.regime_key }}, accepted event time
+              <span class="js-local-time" data-utc="{{ hl.accepted_at|date:'c' }}">{{ hl.accepted_at }}</span>,
+              stale after {{ hl.snapshot.stale_after_sec }}s.
+            </div>
+            {% if hl.profile %}
+              <table class="table table-sm mb-2">
+                <thead><tr><th></th><th>Effective %</th><th>Target %</th></tr></thead>
+                <tbody>
+                  <tr><td>Spot</td><td>{{ hl.profile.spot_pct }}</td><td>{{ hl.profile.target_spot_pct|default:"&ndash;" }}</td></tr>
+                  <tr><td>Futures</td><td>{{ hl.profile.futures_pct }}</td><td>{{ hl.profile.target_futures_pct|default:"&ndash;" }}</td></tr>
+                  <tr><td>Reserve</td><td>{{ hl.profile.reserve_pct }}</td><td></td></tr>
+                </tbody>
+              </table>
+              <div class="small text-muted">
+                Max spot {{ hl.profile.max_spot }} &middot; max long {{ hl.profile.max_long }} &middot;
+                max short {{ hl.profile.max_short }} &middot; max futures total {{ hl.profile.max_total }}.
+                Orders are sized from the <em>effective</em> pool (spot {{ hl.snapshot.spot_trade_pct_of_pool }}% per trade;
+                futures margin {{ hl.snapshot.futures_margin_pct_of_pool }}% per trade, {{ hl.snapshot.futures_leverage }}x isolated),
+                not the "% of available balance" fields below.
+              </div>
+            {% endif %}
+          {% else %}
+            <div class="alert alert-danger py-2 px-3 mb-2">No 122Moon controller update accepted yet &mdash; new HyperLiquid entries are blocked.</div>
+          {% endif %}
+          {% if hl.recent_rejections %}
+            <div class="small text-muted">Recent blocked entries:
+              <ul class="mb-0">{% for r in hl.recent_rejections %}<li>{{ r.symbol }} {{ r.market }}: {{ r.reason }}</li>{% endfor %}</ul>
+            </div>
+          {% endif %}
+        </div>
+
+        <div class="col-12"><hr><h6 class="text-uppercase text-muted small mt-2">Binance &mdash; Futures</h6></div>
         <div class="col-12 col-md-4">
           <label class="form-label">{{ form.futures_max_positions.label }}</label>
           {{ form.futures_max_positions }}
@@ -99,7 +157,7 @@
           {% endfor %}
         </div>
 
-        <div class="col-12"><h6 class="text-uppercase text-muted small mt-3">Spot</h6></div>
+        <div class="col-12"><h6 class="text-uppercase text-muted small mt-3">Binance &mdash; Spot</h6></div>
         <div class="col-12 col-md-4">
           <label class="form-label">{{ form.spot_max_positions.label }}</label>
           {{ form.spot_max_positions }}

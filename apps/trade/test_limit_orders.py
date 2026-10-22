@@ -13,6 +13,8 @@ from apps.trade.utils.create_market_hyperliquid_order import (
     activate_filled_hyperliquid_limit_order,
 )
 from apps.trade.utils.risk_guard import can_open_spot_position
+from apps.trade.utils import market_risk
+from apps.trade.test_market_risk import make_payload, add_hl_key
 
 User = get_user_model()
 
@@ -71,6 +73,9 @@ class HyperliquidFuturesLimitTests(TestCase):
     def setUp(self):
         self.user = User.objects.create_user(username="h", password="x")
         TradeSettings.get_for_user(self.user)
+        # HyperLiquid entries are gated/sized by the 122Moon snapshot.
+        add_hl_key(self.user)
+        market_risk.ingest_payload(make_payload())
 
     @patch("apps.trade.utils.create_market_hyperliquid_order.create_trigger_order", return_value={"id": "T1"})
     @patch("apps.trade.utils.create_market_hyperliquid_order.can_open_futures_position", return_value=(True, ""))
@@ -91,6 +96,11 @@ class HyperliquidFuturesLimitTests(TestCase):
         o = FutureOrder.objects.get(order_id="77")
         self.assertEqual((o.status, o.exchange), ("OPEN", "HYPERLIQUID"))
         self.assertEqual(float(o.pending_sl), 90.0)
+        # 122Moon "both" profile, $1000 free: margin 10% of the 30% pool = $30,
+        # x3 leverage = $90 notional at the $100 entry -> 0.9 contracts.
+        self.assertEqual(float(o.order_quantity), 0.9)
+        self.assertEqual(o.leverage, 3)
+        ex.set_leverage.assert_called_with(3, "ABC/USDC:USDC", params={"marginMode": "isolated"})
 
         activate_filled_hyperliquid_limit_order(ex, o, 1.0, 99.5, 0.01)
         o.refresh_from_db()
@@ -98,6 +108,22 @@ class HyperliquidFuturesLimitTests(TestCase):
         self.assertEqual(float(o.entry_price), 99.5)
         self.assertEqual(o.tps.count(), 1)
         self.assertEqual(trigger.call_count, 2)  # SL + TP
+
+    @patch("apps.trade.utils.create_market_hyperliquid_order.get_hyperliquid_last_price", return_value=110.0)
+    @patch("apps.trade.utils.create_market_hyperliquid_order.make_hyperliquid_exchange")
+    @patch("apps.trade.utils.create_market_hyperliquid_order.UserHyperLiquidKey")
+    def test_binance_settings_do_not_change_hl_order(self, _key, make_ex, _price):
+        TradeSettings.objects.filter(user=self.user).update(
+            futures_leverage=1, futures_position_pct=1, futures_max_long=0, futures_max_positions=0
+        )
+        ex = _exchange()
+        ex.markets = {"ABC/USDC:USDC": {}}
+        ex.fetch_balance.return_value = {"free": {"USDC": 1000.0}}
+        ex.create_order.return_value = {"id": 78}
+        make_ex.return_value = ex
+        self.assertTrue(create_hyperliquid_future_order("buy", "ABCUSDC", self.user, order_type="limit", entry=100))
+        o = FutureOrder.objects.get(order_id="78")
+        self.assertEqual((float(o.order_quantity), o.leverage), (0.9, 3))
 
     def test_invalid_limit_entry_refused(self):
         self.assertFalse(
@@ -109,6 +135,9 @@ class HyperliquidSpotLimitTests(TestCase):
     def setUp(self):
         self.user = User.objects.create_user(username="hs", password="x")
         TradeSettings.get_for_user(self.user)
+        # HyperLiquid entries are gated/sized by the 122Moon snapshot.
+        add_hl_key(self.user)
+        market_risk.ingest_payload(make_payload())
 
     @patch("apps.trade.utils.create_market_hyperliquid_spot_order.can_open_spot_position", return_value=(True, ""))
     @patch("apps.trade.utils.create_market_hyperliquid_spot_order.get_hyperliquid_last_price", return_value=110.0)
@@ -134,6 +163,8 @@ class HyperliquidSpotLimitTests(TestCase):
         o = SpotOrder.objects.get(order_id="5")
         self.assertEqual((o.status, o.exchange), ("OPEN", "HYPERLIQUID"))
         self.assertEqual(float(o.pending_dca), 80.0)
+        # 15% of the 55% spot pool of $1000 = $82.50 -> 0.825 at $100.
+        self.assertEqual(float(o.order_quantity), 0.825)
 
         ex.create_order.return_value = {"id": 6}
         activate_filled_hyperliquid_spot_limit_order(ex, o, 2.0, 99.0, 0.02)

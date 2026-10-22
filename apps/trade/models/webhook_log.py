@@ -22,6 +22,7 @@ class WebhookLog(models.Model):
     side = models.CharField(max_length=10, blank=True, default="")
     market = models.CharField(max_length=10, blank=True, default="")
     exchange = models.CharField(max_length=20, blank=True, default="")
+    event_id = models.CharField(max_length=128, blank=True, default="")
 
     status = models.CharField(max_length=20, choices=Status.choices, default=Status.RECEIVED)
     error_message = models.TextField(blank=True, default="")

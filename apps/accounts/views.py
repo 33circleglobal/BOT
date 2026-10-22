@@ -1,7 +1,7 @@
 from django.shortcuts import render, redirect
 from django.contrib.auth import login, logout, authenticate
 from django.contrib import messages
-from .forms import RegistrationForm, LoginForm, UserKeyForm, UserHyperLiquidKeyForm
+from .forms import RegistrationForm, LoginForm, UserKeyForm, UserHyperLiquidKeyForm, HyperLiquidModeForm
 from .models import UserKey, UserHyperLiquidKey
 from django.contrib.auth.decorators import login_required
 from django.db.models import (
@@ -257,6 +257,31 @@ def _has_active_trades(user):
     )
 
 
+def _after_hl_mode_change(user):
+    from apps.trade.task import cancel_disabled_market_pending_entries
+    from apps.trade.utils.market_risk import sync_settings_to_mode
+
+    # Risk Settings values follow the new mode's profile from the latest
+    # accepted controller update; unfilled entries in a now-disabled market
+    # are cancelled (positions and their exits are untouched).
+    sync_settings_to_mode(user)
+    cancel_disabled_market_pending_entries.delay(user.id)
+
+
+def _apply_hl_trading_mode(request, hl_key, new_mode):
+    if hl_key.trading_mode == new_mode:
+        messages.info(request, "Trading mode unchanged.")
+        return
+    hl_key.trading_mode = new_mode
+    hl_key.save(update_fields=["trading_mode", "updated_at"])
+    _after_hl_mode_change(request.user)
+    messages.success(
+        request,
+        f"HyperLiquid trading mode set to {hl_key.get_trading_mode_display()}. "
+        "Risk settings updated from the latest controller update.",
+    )
+
+
 @login_required
 def profile_view(request):
     user_key = UserKey.objects.filter(user=request.user).first()
@@ -270,6 +295,18 @@ def profile_view(request):
 
     if request.method == "POST":
         action = request.POST.get("action", "save")
+
+        if action == "save_hl_mode":
+            # Mode only (no secrets re-entered). Allowed with open trades:
+            # it never touches positions/stops, only blocks new entries.
+            mode_form = HyperLiquidModeForm(request.POST)
+            if hl_key is None:
+                messages.error(request, "Add a HyperLiquid API key first.")
+            elif mode_form.is_valid():
+                _apply_hl_trading_mode(request, hl_key, mode_form.cleaned_data["trading_mode"])
+            else:
+                messages.error(request, "Invalid trading mode.")
+            return redirect("accounts:profile")
 
         if has_active_trades:
             messages.error(
@@ -309,7 +346,11 @@ def profile_view(request):
                 hl_key.set_api_private_key(hl_form.cleaned_data["api_private_key"])
                 hl_key.api_valid_days = hl_form.cleaned_data["api_valid_days"]
                 hl_key.is_active = hl_form.cleaned_data["is_active"]
+                previous_mode = hl_key.trading_mode if hl_key.pk else None
+                hl_key.trading_mode = hl_form.cleaned_data["trading_mode"]
                 hl_key.save()
+                if previous_mode is not None and previous_mode != hl_key.trading_mode:
+                    _after_hl_mode_change(request.user)
                 messages.success(request, "HyperLiquid API key saved.")
                 return redirect("accounts:profile")
         else:
@@ -331,6 +372,7 @@ def profile_view(request):
             initial={
                 "is_active": hl_key.is_active if hl_key else True,
                 "api_valid_days": hl_key.api_valid_days if hl_key else 0,
+                "trading_mode": hl_key.trading_mode if hl_key else "both",
             }
         )
 

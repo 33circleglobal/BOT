@@ -61,7 +61,19 @@ class UserKey(models.Model):
 
 
 class UserHyperLiquidKey(models.Model):
+    class TradingMode(models.TextChoices):
+        SPOT_ONLY = "spot_only", "Spot only"
+        FUTURES_ONLY = "futures_only", "Futures only"
+        BOTH = "both", "Spot + Futures"
+
     user = models.OneToOneField(User, on_delete=models.CASCADE)
+
+    # Which HyperLiquid markets this member may open new entries in (122Moon
+    # profile selector). Persisted backend setting: never read from a webhook
+    # or request by the order gate.
+    trading_mode = models.CharField(
+        max_length=20, choices=TradingMode.choices, default=TradingMode.BOTH
+    )
 
     master_wallet_address = models.CharField(max_length=255)
     api_wallet_address = models.CharField(max_length=255)

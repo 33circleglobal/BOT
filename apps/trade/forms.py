@@ -16,6 +16,14 @@ class TradeSettingsForm(forms.ModelForm):
             "spot_position_pct",
             "sync_risk_from_webhook",
             "max_market_data_age_minutes",
+            "hl_sync_from_webhook",
+            "hl_spot_max_positions",
+            "hl_futures_max_long",
+            "hl_futures_max_short",
+            "hl_futures_max_positions",
+            "hl_futures_leverage",
+            "hl_spot_trade_pct",
+            "hl_futures_margin_pct",
         ]
         widgets = {
             "futures_max_positions": forms.NumberInput(
@@ -45,8 +53,24 @@ class TradeSettingsForm(forms.ModelForm):
             "max_market_data_age_minutes": forms.NumberInput(
                 attrs={"class": "form-control", "min": 1, "max": 1440}
             ),
+            "hl_sync_from_webhook": forms.CheckboxInput(attrs={"class": "form-check-input"}),
+            "hl_spot_max_positions": forms.NumberInput(attrs={"class": "form-control", "min": 0}),
+            "hl_futures_max_long": forms.NumberInput(attrs={"class": "form-control", "min": 0}),
+            "hl_futures_max_short": forms.NumberInput(attrs={"class": "form-control", "min": 0}),
+            "hl_futures_max_positions": forms.NumberInput(attrs={"class": "form-control", "min": 0}),
+            "hl_futures_leverage": forms.NumberInput(attrs={"class": "form-control", "min": 1, "max": 125}),
+            "hl_spot_trade_pct": forms.NumberInput(attrs={"class": "form-control", "min": 0.01, "max": 100, "step": "0.01"}),
+            "hl_futures_margin_pct": forms.NumberInput(attrs={"class": "form-control", "min": 0.01, "max": 100, "step": "0.01"}),
         }
         labels = {
+            "hl_sync_from_webhook": "Auto-update HyperLiquid limits from the 122Moon controller",
+            "hl_spot_max_positions": "Max spot trades (manual, used when auto-update is off)",
+            "hl_futures_max_long": "Max LONG futures trades (manual)",
+            "hl_futures_max_short": "Max SHORT futures trades (manual)",
+            "hl_futures_max_positions": "Max total futures trades (manual)",
+            "hl_futures_leverage": "Max leverage ceiling",
+            "hl_spot_trade_pct": "Spot position size (% of spot pool per trade)",
+            "hl_futures_margin_pct": "Futures position size (% of futures pool, as margin)",
             "futures_max_positions": "Max total futures trades (open at once)",
             "futures_max_long": "Max LONG futures trades",
             "futures_max_short": "Max SHORT futures trades",
@@ -73,4 +97,9 @@ class TradeSettingsForm(forms.ModelForm):
                 "futures_max_short",
                 "Cannot exceed max total futures trades.",
             )
+        hl_total = cleaned.get("hl_futures_max_positions")
+        for f in ("hl_futures_max_long", "hl_futures_max_short"):
+            v = cleaned.get(f)
+            if hl_total is not None and v is not None and v > hl_total:
+                self.add_error(f, "Cannot exceed max total futures trades.")
         return cleaned

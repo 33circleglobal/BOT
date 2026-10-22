@@ -158,6 +158,26 @@
               <th class="text-muted small">API Valid Days</th>
               <td>{{ hl_key.api_valid_days }}</td>
             </tr>
+            <tr>
+              <th class="text-muted small">Trading mode</th>
+              <td>
+                <form method="post" class="d-flex gap-2 align-items-center">
+                  {% csrf_token %}
+                  <input type="hidden" name="action" value="save_hl_mode">
+                  <select name="trading_mode" class="form-select form-select-sm w-auto">
+                    {% for value, label in hl_form.fields.trading_mode.choices %}
+                      <option value="{{ value }}" {% if value == hl_key.trading_mode %}selected{% endif %}>{{ label }}</option>
+                    {% endfor %}
+                  </select>
+                  <button type="submit" class="btn btn-sm btn-outline-primary">Save mode</button>
+                </form>
+                <div class="form-text">
+                  Controls which markets get new entries and which 122Moon profile applies.
+                  Risk Settings follow this automatically; it can be changed with trades open
+                  (positions and stops are kept).
+                </div>
+              </td>
+            </tr>
           </tbody>
         </table>
       {% else %}
@@ -191,6 +211,10 @@
             {% for error in hl_form.api_valid_days.errors %}
               <div class="text-danger small">{{ error }}</div>
             {% endfor %}
+          </div>
+          <div class="col-12 col-md-6">
+            <label class="form-label">{{ hl_form.trading_mode.label }}</label>
+            {{ hl_form.trading_mode }}
           </div>
           <div class="col-12">
             <div class="form-check form-switch">
@@ -325,6 +349,10 @@
             {% for error in hl_form.api_valid_days.errors %}
               <div class="text-danger small">{{ error }}</div>
             {% endfor %}
+          </div>
+          <div class="mb-3">
+            <label class="form-label">{{ hl_form.trading_mode.label }}</label>
+            {{ hl_form.trading_mode }}
           </div>
           <div class="form-check form-switch">
             {{ hl_form.is_active }}

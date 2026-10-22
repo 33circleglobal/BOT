@@ -13,6 +13,7 @@ from apps.trade.utils.hyperliquid_common import (
     get_hyperliquid_last_price,
 )
 from apps.trade.utils.risk_guard import can_open_futures_position
+from apps.trade.utils.market_risk import size_entry
 from apps.trade.utils.locks import user_trade_open_lock
 
 import logging
@@ -289,12 +290,9 @@ def create_hyperliquid_future_order(
         is_limit, entry = parse_limit_entry(order_type, entry, raw_symbol)
         if is_limit and entry is None:
             return False
-        trade_settings = TradeSettings.get_for_user(user)
-        if leverage is None:
-            leverage = trade_settings.futures_leverage
-        if position_pct is None:
-            position_pct = float(trade_settings.futures_position_pct)
-        position = position_pct
+        # Leverage and size come from the HyperLiquid gate (controller snapshot
+        # + HL settings), never the Binance fields; `leverage` is only an
+        # optional caller-supplied ceiling. `position_pct` is unused here.
         position_direction = (
             FutureOrder.TradeDirection.LONG
             if side == "buy"
@@ -341,7 +339,22 @@ def create_hyperliquid_future_order(
             balance = exchange.fetch_balance(params={"type": "swap", "marginMode": "isolated"})
             user_balance = float((balance.get("free") or {}).get("USDC") or 0)
 
-            user_usable_balance = (user_balance * position / 100) * leverage
+            # 122Moon V3.2 sizing: margin = 10% of the *effective futures
+            # pool* (not of free balance), notional = margin x leverage.
+            # size_entry re-runs the gate (fresh snapshot, mode, caps) and
+            # clips to uncommitted pool capacity and free collateral.
+            decision = size_entry(
+                user, "futures", user_balance, position_direction, raw_symbol
+            )
+            if not decision.allowed:
+                logger.info(
+                    f"[risk] Skipping HyperLiquid futures order for {user.username} "
+                    f"{raw_symbol}: {decision.reason}"
+                )
+                return False
+            # Controller/hard ceilings win over any caller-supplied leverage.
+            leverage = decision.leverage if leverage is None else min(leverage, decision.leverage)
+            user_usable_balance = float(decision.budget) * leverage
             # Size off the price we'll actually fill at.
             quantity = user_usable_balance / (entry if is_limit else current_price_of_symbol)
             quantity = exchange.amountToPrecision(symbol, quantity)

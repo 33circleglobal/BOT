@@ -8,6 +8,7 @@ from apps.trade.utils.hyperliquid_common import (
     get_hyperliquid_last_price,
 )
 from apps.trade.utils.risk_guard import can_open_spot_position
+from apps.trade.utils.market_risk import size_entry
 from apps.trade.utils.locks import user_trade_open_lock
 
 import ccxt
@@ -252,9 +253,11 @@ def create_hyperliquid_spot_order(
         is_limit, entry = parse_limit_entry(order_type, entry, raw_symbol)
         if is_limit and (entry is None or side != "buy"):
             return False
-        if position_pct is None:
-            position_pct = float(TradeSettings.get_for_user(user).spot_position_pct)
-        position = position_pct
+        # Only the (non-risk-increasing) sell branch below uses this; buy
+        # sizing comes from the HyperLiquid gate.
+        position = position_pct if position_pct is not None else float(
+            TradeSettings.get_for_user(user).spot_position_pct
+        )
 
         with user_trade_open_lock(user.id):
             allowed, reason = can_open_spot_position(
@@ -296,7 +299,16 @@ def create_hyperliquid_spot_order(
 
             if side == "buy":
                 user_balance = float((balance.get("free") or {}).get("USDC") or 0)
-                user_usable_balance = user_balance * position / 100
+                # 122Moon V3.2 sizing: 15% of the *effective spot pool*,
+                # clipped to uncommitted pool capacity and free collateral.
+                decision = size_entry(user, "spot", user_balance, None, raw_symbol)
+                if not decision.allowed:
+                    logger.info(
+                        f"[risk] Skipping HyperLiquid spot order for {user.username} "
+                        f"{raw_symbol}: {decision.reason}"
+                    )
+                    return False
+                user_usable_balance = float(decision.budget)
                 # Size off the price we'll actually fill at.
                 quantity = user_usable_balance / (entry if is_limit else current_price_of_symbol)
             else:

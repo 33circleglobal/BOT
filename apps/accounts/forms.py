@@ -110,10 +110,23 @@ class UserHyperLiquidKeyForm(forms.Form):
             }
         ),
     )
+    trading_mode = forms.ChoiceField(
+        choices=UserHyperLiquidKey.TradingMode.choices,
+        initial=UserHyperLiquidKey.TradingMode.BOTH,
+        label="Trading mode",
+        widget=forms.Select(attrs={"class": "form-select"}),
+    )
     is_active = forms.BooleanField(
         required=False,
         initial=True,
         widget=forms.CheckboxInput(attrs={"class": "form-check-input"}),
+    )
+
+
+class HyperLiquidModeForm(forms.Form):
+    trading_mode = forms.ChoiceField(
+        choices=UserHyperLiquidKey.TradingMode.choices,
+        widget=forms.Select(attrs={"class": "form-select"}),
     )
 
 

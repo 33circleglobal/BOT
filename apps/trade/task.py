@@ -147,6 +147,36 @@ def close_order_of_user_controller(self, side, symbol, market, exchange="binance
 
 
 @celery_app.task(bind=True)
+def cancel_disabled_market_pending_entries(self, user_id):
+    """After a HyperLiquid trading-mode change: cancels this user's resting
+    *entry* orders (status OPEN) in the market the mode no longer allows.
+    Filled positions and their SL/TP/reduce-only exits are never touched.
+    Idempotent: only OPEN rows are selected, so a retry is a no-op."""
+    key = UserHyperLiquidKey.objects.filter(user_id=user_id).first()
+    mode = key.trading_mode if key else ""
+    if mode == "spot_only":
+        for pending in FutureOrder.objects.filter(
+            user_id=user_id,
+            status=FutureOrder.TradeStatus.OPEN,
+            exchange=FutureOrder.ExchangeType.HYPERLIQUID,
+        ):
+            try:
+                cancel_pending_hyperliquid_limit_order(pending)
+            except Exception as e:
+                logger.error(f"Mode change: failed to cancel futures entry {pending.id}: {e}")
+    if mode == "futures_only":
+        for pending in SpotOrder.objects.filter(
+            user_id=user_id,
+            status=SpotOrder.TradeStatus.OPEN,
+            exchange=SpotOrder.ExchangeType.HYPERLIQUID,
+        ):
+            try:
+                cancel_pending_hyperliquid_spot_limit_order(pending)
+            except Exception as e:
+                logger.error(f"Mode change: failed to cancel spot entry {pending.id}: {e}")
+
+
+@celery_app.task(bind=True)
 def quick_cancel_pending_spot_order(self, order_id):
     try:
         order = SpotOrder.objects.get(id=order_id, status=SpotOrder.TradeStatus.OPEN)

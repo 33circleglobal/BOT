@@ -33,6 +33,31 @@ class TradeSettings(models.Model):
         validators=[MinValueValidator(0.01), MaxValueValidator(100)],
     )
 
+    # HyperLiquid has its own, independent settings (Binance fields above are
+    # never read for HyperLiquid orders). Auto-update on => caps come from the
+    # latest valid controller snapshot; off => the manual caps below apply.
+    # Either way the backend hard ceilings and the freshness gate still apply.
+    hl_sync_from_webhook = models.BooleanField(default=True)
+    hl_spot_max_positions = models.PositiveIntegerField(default=10)
+    hl_futures_max_long = models.PositiveIntegerField(default=7)
+    hl_futures_max_short = models.PositiveIntegerField(default=3)
+    hl_futures_max_positions = models.PositiveIntegerField(default=10)
+    # Per-trade size as % of the effective pool (spot notional / futures
+    # margin). Used when auto-update is off; with auto-update on the
+    # controller's values (15 / 10 by default) apply.
+    hl_spot_trade_pct = models.DecimalField(
+        max_digits=5, decimal_places=2, default=15,
+        validators=[MinValueValidator(0.01), MaxValueValidator(100)],
+    )
+    hl_futures_margin_pct = models.DecimalField(
+        max_digits=5, decimal_places=2, default=10,
+        validators=[MinValueValidator(0.01), MaxValueValidator(100)],
+    )
+    # Member ceiling on leverage; the controller's value is used when lower.
+    hl_futures_leverage = models.PositiveIntegerField(
+        default=3, validators=[MinValueValidator(1), MaxValueValidator(125)]
+    )
+
     # Leverage applied to new futures positions.
     futures_leverage = models.PositiveIntegerField(
         default=5, validators=[MinValueValidator(1), MaxValueValidator(125)]

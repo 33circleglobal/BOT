@@ -14,7 +14,10 @@ from apps.trade.task import (
     handle_futures_signal,
 )
 
-from apps.trade.models import FutureOrder, FutureTakeProfit, TradeSettings, WebhookLog
+from apps.trade.models import FutureOrder, FutureTakeProfit, TradeSettings, WebhookLog, RiskDecisionLog
+from apps.trade.utils import market_risk
+import hmac
+import logging
 from apps.trade.forms import TradeSettingsForm
 from apps.accounts.models import UserKey, UserHyperLiquidKey
 from apps.trade.utils.common import (
@@ -44,8 +47,47 @@ from apps.trade.models import SpotOrder
 from django.conf import settings
 from django.core.paginator import Paginator
 from django.utils import timezone
-from datetime import datetime
+from datetime import datetime, timezone as dt_timezone
 from decimal import Decimal
+
+
+logger = logging.getLogger(__name__)
+
+
+def _webhook_secret_ok(request) -> bool:
+    expected = settings.TRADINGVIEW_WEBHOOK_SECRET
+    if not expected:
+        return False  # not configured => fail closed
+    given = request.headers.get("X-Webhook-Secret") or request.GET.get("secret") or ""
+    return hmac.compare_digest(given.encode(), expected.encode())
+
+
+def _handle_market_risk_v5(request, payload, log):
+    """122Moon V3.2 HyperLiquid controller update (schema_version 5)."""
+    log.event_id = str(payload.get("event_id") or "")[:128]
+    log.exchange = "hyperliquid"
+    if not _webhook_secret_ok(request):
+        log.status = WebhookLog.Status.ERROR
+        log.error_message = "Authentication failed"
+        log.save()
+        return JsonResponse({"status": "error", "message": "Unauthorized"}, status=401)
+    try:
+        snap = market_risk.ingest_payload(payload)
+    except market_risk.DuplicateEvent as e:
+        log.status = WebhookLog.Status.PROCESSED
+        log.error_message = f"Ignored: {e}"
+        log.save()
+        return JsonResponse({"status": "ignored", "message": "Duplicate event"})
+    except market_risk.PayloadRejected as e:
+        log.status = WebhookLog.Status.ERROR
+        log.error_message = f"Rejected: {e}"
+        log.save()
+        return JsonResponse({"status": "error", "message": str(e)}, status=400)
+    log.status = WebhookLog.Status.PROCESSED
+    log.save()
+    return JsonResponse(
+        {"status": "success", "message": f"Market risk snapshot {snap.event_id} accepted"}
+    )
 
 
 @csrf_exempt
@@ -70,6 +112,9 @@ def trading_view_webhook(request):
 
         log.payload = payload
         log.action = str(payload.get("action") or "")
+
+        if payload.get("action") == "update_market_risk" and market_risk.is_market_risk_v5_payload(payload):
+            return _handle_market_risk_v5(request, payload, log)
 
         if payload.get("action") == "update_market_risk":
             regime = payload.get("regime")
@@ -870,8 +915,28 @@ def risk_settings(request):
             "form": form,
             "settings_obj": settings_obj,
             "market_data_stale": settings_obj.is_market_data_stale(),
+            "hl": _hyperliquid_risk_context(request.user, settings_obj),
         },
     )
+
+
+def _hyperliquid_risk_context(user, settings_obj):
+    """Read-only 122Moon status for the Risk Settings page."""
+    snap = market_risk.get_current_snapshot()
+    key = UserHyperLiquidKey.objects.filter(user=user).first()
+    mode = key.trading_mode if key else ""
+    ctx = {
+        "has_key": key is not None,
+        "mode": key.get_trading_mode_display() if key else "Not set (add a HyperLiquid API key)",
+        "snapshot": snap,
+        "fresh": market_risk.snapshot_is_fresh(snap),
+        "profile": None,
+        "recent_rejections": RiskDecisionLog.objects.filter(user=user, allowed=False)[:5],
+    }
+    if snap:
+        ctx["profile"] = (snap.allocation_profiles or {}).get(mode)
+        ctx["accepted_at"] = datetime.fromtimestamp(snap.event_time_ms / 1000, tz=dt_timezone.utc)
+    return ctx
 
 
 @login_required

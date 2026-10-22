@@ -24,6 +24,7 @@ no `exchange` preserves the old bot-wide pooled behavior.
 """
 
 from apps.trade.models import FutureOrder, SpotOrder, TradeSettings
+from apps.trade.utils import market_risk
 
 FUTURES_ONE_POSITION_PER_SYMBOL = True
 SPOT_ONE_POSITION_PER_SYMBOL = True
@@ -36,8 +37,32 @@ def _scope_by_exchange(queryset, exchange):
     return queryset.filter(exchange__in=exchange_filter)
 
 
+def _is_hyperliquid(exchange):
+    return isinstance(exchange, str) and exchange == "HYPERLIQUID"
+
+
+def _hl_one_per_symbol(model, user, symbol):
+    return model.objects.filter(
+        user=user,
+        symbol=symbol,
+        exchange="HYPERLIQUID",
+        status__in=[model.TradeStatus.POSITION, model.TradeStatus.OPEN],
+    ).exists()
+
+
 def can_open_futures_position(user, symbol, direction, exchange=None):
     """Returns (allowed: bool, reason: str)."""
+    if _is_hyperliquid(exchange):
+        # HyperLiquid is governed by the 122Moon V3.2 controller snapshot
+        # (freshness, member mode, profile caps), not the legacy Binance
+        # regime webhook. Binance behavior below is unchanged.
+        if FUTURES_ONE_POSITION_PER_SYMBOL and _hl_one_per_symbol(FutureOrder, user, symbol):
+            return False, f"{symbol} already has an open futures position (one-position-per-symbol)"
+        decision = market_risk.evaluate_entry(user, "futures", direction, symbol)
+        if not decision.allowed:
+            market_risk.log_decision(user, decision, symbol, direction)
+        return decision.allowed, decision.reason
+
     limits = TradeSettings.get_for_user(user)
 
     if limits.is_market_data_stale():
@@ -80,6 +105,14 @@ def can_open_futures_position(user, symbol, direction, exchange=None):
 
 def can_open_spot_position(user, symbol, exchange=None):
     """Returns (allowed: bool, reason: str)."""
+    if _is_hyperliquid(exchange):
+        if SPOT_ONE_POSITION_PER_SYMBOL and _hl_one_per_symbol(SpotOrder, user, symbol):
+            return False, f"{symbol} already has an open spot position (one-position-per-symbol)"
+        decision = market_risk.evaluate_entry(user, "spot", None, symbol)
+        if not decision.allowed:
+            market_risk.log_decision(user, decision, symbol)
+        return decision.allowed, decision.reason
+
     limits = TradeSettings.get_for_user(user)
 
     if limits.is_market_data_stale():

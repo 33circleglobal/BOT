@@ -4,3 +4,4 @@ from .future_take_profit import FutureTakeProfit
 from .spot_take_profit import SpotTakeProfit
 from .trade_settings import TradeSettings
 from .webhook_log import WebhookLog
+from .market_risk_snapshot import MarketRiskSnapshot, RiskDecisionLog
