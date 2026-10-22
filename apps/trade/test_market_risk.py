@@ -104,12 +104,13 @@ class WebhookIngestTests(TestCase):
         self.assertEqual(snap.raw_payload["event_id"], p["event_id"])
         self.assertEqual(WebhookLog.objects.get().event_id, p["event_id"])
 
-    def test_missing_wrong_or_unconfigured_secret_rejected(self):
+    def test_missing_or_wrong_secret_rejected_when_configured(self):
         self.assertEqual(post(self.client, make_payload(), secret="").status_code, 401)
         self.assertEqual(post(self.client, make_payload(), secret="nope").status_code, 401)
         self.assertEqual(MarketRiskSnapshot.objects.count(), 0)
+        # Unset secret => accepted without auth (temporary, matches legacy webhook).
         with override_settings(TRADINGVIEW_WEBHOOK_SECRET=""):
-            self.assertEqual(post(self.client, make_payload(), secret="").status_code, 401)
+            self.assertEqual(post(self.client, make_payload(), secret="").status_code, 200)
 
     def test_header_secret_accepted(self):
         r = self.client.post("/webhook/", data=json.dumps(make_payload()),

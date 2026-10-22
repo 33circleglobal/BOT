@@ -204,7 +204,7 @@ CACHES = {
 
 # --- 122Moon V3.2 HyperLiquid market-risk controller --------------------------
 # Shared secret the controller webhook must present (X-Webhook-Secret header or
-# ?secret= query param). Empty => schema-v5 updates are rejected (fail closed).
+# ?secret= query param). Empty => no auth required (temporary; set it to enforce).
 TRADINGVIEW_WEBHOOK_SECRET = config("TRADINGVIEW_WEBHOOK_SECRET", default="")
 # Backend hard ceilings that a webhook profile can never raise.
 HL_HARD_MAX_SPOT_POSITIONS = config("HL_HARD_MAX_SPOT_POSITIONS", default=20, cast=int)

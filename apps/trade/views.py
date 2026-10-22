@@ -57,7 +57,10 @@ logger = logging.getLogger(__name__)
 def _webhook_secret_ok(request) -> bool:
     expected = settings.TRADINGVIEW_WEBHOOK_SECRET
     if not expected:
-        return False  # not configured => fail closed
+        # No secret configured yet: accept (same as the legacy webhook). Set
+        # TRADINGVIEW_WEBHOOK_SECRET to require it.
+        logger.warning("TRADINGVIEW_WEBHOOK_SECRET is not set; accepting unauthenticated 122Moon update")
+        return True
     given = request.headers.get("X-Webhook-Secret") or request.GET.get("secret") or ""
     return hmac.compare_digest(given.encode(), expected.encode())
 
