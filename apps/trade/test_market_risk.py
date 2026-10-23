@@ -120,7 +120,6 @@ class WebhookIngestTests(TestCase):
     def test_invalid_identity_fields(self):
         self.reject(make_payload(schema_version=4))
         self.reject(make_payload(schema_version="five"))
-        self.reject(make_payload(exchange="Binance", schema_version=5))
         self.reject(make_payload(account_mode="cross"))
         self.reject(make_payload(collateral_asset="USDT"))
         self.reject(make_payload(member_mode_selection="tradingview"))
@@ -224,6 +223,35 @@ class WebhookIngestTests(TestCase):
         ts = TradeSettings.objects.get(user=u)
         self.assertEqual((ts.futures_max_long, ts.futures_max_short, ts.futures_max_positions, ts.spot_max_positions),
                          (1, 4, 5, 2))
+        self.assertEqual(MarketRiskSnapshot.objects.count(), 0)
+
+    def test_binance_controller_payload_with_schema_version_uses_legacy_path(self):
+        """Real Binance controller message (schema_version 2, exchange Binance)."""
+        u = User.objects.create_user("bin", email="bin@x.com", password="x")
+        TradeSettings.get_for_user(u)
+        payload = {
+            "spot": {"max_trades": 2},
+            "action": "update_market_risk",
+            "target": {"spot": 2, "max_long": 1, "max_short": 2, "max_total": 3},
+            "futures": {"max_long": 1, "max_short": 2, "max_total": 3},
+            "event_id": "122ALT-PRIMARY-BTC-BREADTH-V2.2.2_1792722600000_neutral_bear_neutral_neutral",
+            "exchange": "Binance",
+            "strategy": "alt_primary_btc_overlay",
+            "event_type": "market_state_change",
+            "data_health": {"alt_ok": True, "btc_ok": True},
+            "event_time_ms": 1792723500528,
+            "event_sequence": 11333,
+            "schema_version": 2,
+            "release_version": "2.2.2",
+            "stale_after_sec": 5400,
+            "primary_state_time_ms": 1792722600000,
+        }
+        r = post(self.client, payload, secret="")
+        self.assertEqual(r.status_code, 200, r.content)
+        ts = TradeSettings.objects.get(user=u)
+        self.assertEqual((ts.futures_max_long, ts.futures_max_short, ts.futures_max_positions, ts.spot_max_positions),
+                         (1, 2, 3, 2))
+        self.assertIsNotNone(ts.last_market_risk_update)
         self.assertEqual(MarketRiskSnapshot.objects.count(), 0)
 
     def test_v5_update_does_not_touch_trade_settings_caps(self):

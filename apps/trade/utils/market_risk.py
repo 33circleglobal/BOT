@@ -95,13 +95,16 @@ def _int(value, field_name, lo=None, hi=None) -> int:
 
 
 def is_market_risk_v5_payload(payload) -> bool:
-    """True when an `update_market_risk` payload is the V3.2 HyperLiquid
-    controller message (as opposed to the legacy Binance regime update)."""
+    """True only for the V3.2 HyperLiquid controller message. Routing is by
+    exchange: any other exchange (e.g. the Binance controller, which has its
+    own schema_version numbering) goes to the legacy handler untouched. A
+    payload naming no exchange is treated as V3.2 only if it says schema 5."""
     if not isinstance(payload, dict):
         return False
-    return "schema_version" in payload or (
-        str(payload.get("exchange") or "").strip().lower() == "hyperliquid"
-    )
+    exchange = str(payload.get("exchange") or "").strip().lower()
+    if exchange:
+        return exchange == "hyperliquid"
+    return payload.get("schema_version") == SUPPORTED_SCHEMA_VERSION
 
 
 def _validate_profile(mode: str, raw, alt_ok: bool) -> dict:
