@@ -1,7 +1,7 @@
 from unittest.mock import MagicMock, patch
 
 from django.contrib.auth import get_user_model
-from django.test import TestCase
+from django.test import TestCase, override_settings
 
 from apps.trade.models import FutureOrder, SpotOrder, SpotTakeProfit, TradeSettings
 from apps.trade.utils.create_market_binance_spot_order import (
@@ -69,11 +69,12 @@ class SpotLimitOrderTests(TestCase):
         self.assertEqual(SpotTakeProfit.objects.filter(order=o).count(), 1)
 
 
+@override_settings(DISABLE_FUTURES_STOP_LOSS=False)
 class HyperliquidFuturesLimitTests(TestCase):
     def setUp(self):
         self.user = User.objects.create_user(username="h", password="x")
         TradeSettings.get_for_user(self.user)
-        # HyperLiquid entries are gated/sized by the 122Moon snapshot.
+        # HyperLiquid entries are gated/sized by the V4.3.1 heartbeat.
         add_hl_key(self.user)
         market_risk.ingest_payload(make_payload())
 
@@ -85,7 +86,7 @@ class HyperliquidFuturesLimitTests(TestCase):
     def test_limit_rests_then_activates(self, _key, make_ex, _price, _allowed, trigger):
         ex = _exchange()
         ex.markets = {"ABC/USDC:USDC": {}}
-        ex.fetch_balance.return_value = {"free": {"USDC": 1000.0}}
+        ex.fetch_balance.return_value = {"free": {"USDC": 1000.0}, "total": {"USDC": 1000.0}}
         ex.create_order.return_value = {"id": 77}
         make_ex.return_value = ex
 
@@ -96,9 +97,9 @@ class HyperliquidFuturesLimitTests(TestCase):
         o = FutureOrder.objects.get(order_id="77")
         self.assertEqual((o.status, o.exchange), ("OPEN", "HYPERLIQUID"))
         self.assertEqual(float(o.pending_sl), 90.0)
-        # 122Moon "both" profile, $1000 free: margin 10% of the 30% pool = $30,
-        # x3 leverage = $90 notional at the $100 entry -> 0.9 contracts.
-        self.assertEqual(float(o.order_quantity), 0.9)
+        # V4.3.1: margin 10% of $1000 entry equity = $100, x3 leverage = $300
+        # notional at the $100 entry -> 3 contracts.
+        self.assertEqual(float(o.order_quantity), 3.0)
         self.assertEqual(o.leverage, 3)
         ex.set_leverage.assert_called_with(3, "ABC/USDC:USDC", params={"marginMode": "isolated"})
 
@@ -118,12 +119,12 @@ class HyperliquidFuturesLimitTests(TestCase):
         )
         ex = _exchange()
         ex.markets = {"ABC/USDC:USDC": {}}
-        ex.fetch_balance.return_value = {"free": {"USDC": 1000.0}}
+        ex.fetch_balance.return_value = {"free": {"USDC": 1000.0}, "total": {"USDC": 1000.0}}
         ex.create_order.return_value = {"id": 78}
         make_ex.return_value = ex
         self.assertTrue(create_hyperliquid_future_order("buy", "ABCUSDC", self.user, order_type="limit", entry=100))
         o = FutureOrder.objects.get(order_id="78")
-        self.assertEqual((float(o.order_quantity), o.leverage), (0.9, 3))
+        self.assertEqual((float(o.order_quantity), o.leverage), (3.0, 3))
 
     def test_invalid_limit_entry_refused(self):
         self.assertFalse(
@@ -135,7 +136,7 @@ class HyperliquidSpotLimitTests(TestCase):
     def setUp(self):
         self.user = User.objects.create_user(username="hs", password="x")
         TradeSettings.get_for_user(self.user)
-        # HyperLiquid entries are gated/sized by the 122Moon snapshot.
+        # HyperLiquid entries are gated/sized by the V4.3.1 heartbeat.
         add_hl_key(self.user)
         market_risk.ingest_payload(make_payload())
 
@@ -151,7 +152,7 @@ class HyperliquidSpotLimitTests(TestCase):
 
         ex = _exchange()
         ex.markets = {"ABC/USDC": {}}
-        ex.fetch_balance.return_value = {"free": {"USDC": 1000.0}}
+        ex.fetch_balance.return_value = {"free": {"USDC": 1000.0}, "total": {"USDC": 1000.0}}
         ex.create_order.return_value = {"id": 5}
         make_ex.return_value = ex
 
@@ -163,8 +164,8 @@ class HyperliquidSpotLimitTests(TestCase):
         o = SpotOrder.objects.get(order_id="5")
         self.assertEqual((o.status, o.exchange), ("OPEN", "HYPERLIQUID"))
         self.assertEqual(float(o.pending_dca), 80.0)
-        # 15% of the 55% spot pool of $1000 = $82.50 -> 0.825 at $100.
-        self.assertEqual(float(o.order_quantity), 0.825)
+        # V4.3.1: 15% of $1000 entry equity = $150 -> 1.5 at $100.
+        self.assertEqual(float(o.order_quantity), 1.5)
 
         ex.create_order.return_value = {"id": 6}
         activate_filled_hyperliquid_spot_limit_order(ex, o, 2.0, 99.0, 0.02)

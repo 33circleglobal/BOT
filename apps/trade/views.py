@@ -14,7 +14,7 @@ from apps.trade.task import (
     handle_futures_signal,
 )
 
-from apps.trade.models import FutureOrder, FutureTakeProfit, TradeSettings, WebhookLog, RiskDecisionLog
+from apps.trade.models import FutureOrder, FutureTakeProfit, TradeSettings, WebhookLog, RiskDecisionLog, HLEquityBaseline, HLOrderReservation
 from apps.trade.utils import market_risk
 import hmac
 import logging
@@ -66,7 +66,7 @@ def _webhook_secret_ok(request) -> bool:
 
 
 def _handle_market_risk_v5(request, payload, log):
-    """122Moon V3.2 HyperLiquid controller update (schema_version 5)."""
+    """Throneex HyperLiquid V4.3.1 risk heartbeat (schema 9)."""
     log.event_id = str(payload.get("event_id") or "")[:128]
     log.exchange = "hyperliquid"
     if not _webhook_secret_ok(request):
@@ -116,7 +116,7 @@ def trading_view_webhook(request):
         log.payload = payload
         log.action = str(payload.get("action") or "")
 
-        if payload.get("action") == "update_market_risk" and market_risk.is_market_risk_v5_payload(payload):
+        if payload.get("action") == "update_market_risk" and market_risk.is_market_risk_payload(payload):
             return _handle_market_risk_v5(request, payload, log)
 
         if payload.get("action") == "update_market_risk":
@@ -924,7 +924,7 @@ def risk_settings(request):
 
 
 def _hyperliquid_risk_context(user, settings_obj):
-    """Read-only 122Moon status for the Risk Settings page."""
+    """Read-only V4.3.1 status for the Risk Settings page."""
     snap = market_risk.get_current_snapshot()
     key = UserHyperLiquidKey.objects.filter(user=user).first()
     mode = key.trading_mode if key else ""
@@ -935,6 +935,10 @@ def _hyperliquid_risk_context(user, settings_obj):
         "fresh": market_risk.snapshot_is_fresh(snap),
         "profile": None,
         "recent_rejections": RiskDecisionLog.objects.filter(user=user, allowed=False)[:5],
+        "baseline": HLEquityBaseline.objects.filter(user=user).first(),
+        "active_reservations": HLOrderReservation.objects.filter(
+            user=user, status__in=HLOrderReservation.ACTIVE
+        ).count(),
     }
     if snap:
         ctx["profile"] = (snap.allocation_profiles or {}).get(mode)

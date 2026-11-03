@@ -13,7 +13,7 @@ from apps.trade.utils.hyperliquid_common import (
     get_hyperliquid_last_price,
 )
 from apps.trade.utils.risk_guard import can_open_futures_position
-from apps.trade.utils.market_risk import size_entry
+from apps.trade.utils.market_risk import EntryDecision, reservation_scope, size_entry
 from apps.trade.utils.locks import user_trade_open_lock
 
 import logging
@@ -339,116 +339,135 @@ def create_hyperliquid_future_order(
             balance = exchange.fetch_balance(params={"type": "swap", "marginMode": "isolated"})
             user_balance = float((balance.get("free") or {}).get("USDC") or 0)
 
-            # 122Moon V3.2 sizing: margin = 10% of the *effective futures
-            # pool* (not of free balance), notional = margin x leverage.
-            # size_entry re-runs the gate (fresh snapshot, mode, caps) and
-            # clips to uncommitted pool capacity and free collateral.
-            decision = size_entry(
-                user, "futures", user_balance, position_direction, raw_symbol
+            # V4.3.1 sizing: margin = 10% of *entry equity* (not of free
+            # balance), notional = margin x leverage. size_entry re-runs the
+            # gate (fresh heartbeat, mode, caps, Both pools, live reserve,
+            # gross notional, stop risk) and creates the local reservation.
+            # If the stop loss is disabled there is no reliable stop-risk
+            # estimate, so stop_ref is None and the entry is rejected.
+            user_equity = (balance.get("total") or {}).get("USDC")
+            ref_price = entry if is_limit else current_price_of_symbol
+            stop_ref = None if settings.DISABLE_FUTURES_STOP_LOSS else (
+                float(sl) if sl is not None else compute_default_sl(ref_price, side)
             )
-            if not decision.allowed:
-                logger.info(
-                    f"[risk] Skipping HyperLiquid futures order for {user.username} "
-                    f"{raw_symbol}: {decision.reason}"
+            scope = reservation_scope(EntryDecision(allowed=True))
+            with scope:
+                decision = scope.decision = size_entry(
+                    user, "futures", user_balance, position_direction, raw_symbol,
+                    equity_usdc=user_equity, entry_price=ref_price, sl_price=stop_ref,
                 )
-                return False
-            # Controller/hard ceilings win over any caller-supplied leverage.
-            leverage = decision.leverage if leverage is None else min(leverage, decision.leverage)
-            user_usable_balance = float(decision.budget) * leverage
-            # Size off the price we'll actually fill at.
-            quantity = user_usable_balance / (entry if is_limit else current_price_of_symbol)
-            quantity = exchange.amountToPrecision(symbol, quantity)
+                if not decision.allowed:
+                    logger.info(
+                        f"[risk] Skipping HyperLiquid futures order for {user.username} "
+                        f"{raw_symbol}: {decision.reason}"
+                    )
+                    return False
+                # Controller/hard ceilings win over any caller-supplied leverage.
+                leverage = decision.leverage if leverage is None else min(leverage, decision.leverage)
+                user_usable_balance = float(decision.budget) * leverage
+                # Size off the price we'll actually fill at.
+                quantity = user_usable_balance / (entry if is_limit else current_price_of_symbol)
+                quantity = exchange.amountToPrecision(symbol, quantity)
 
-            exchange.set_leverage(leverage, symbol, params={"marginMode": "isolated"})
+                exchange.set_leverage(leverage, symbol, params={"marginMode": "isolated"})
 
-            if is_limit:
-                entry = float(exchange.priceToPrecision(symbol, entry))
-                if sl is not None:
-                    s = float(sl)
-                    if (side == "buy" and s >= entry) or (side == "sell" and s <= entry):
-                        logger.error(
-                            f"[sl] Invalid SL for {symbol}: sl={s}, entry={entry}, "
-                            f"side={side}. Falling back to the computed default SL."
-                        )
-                        sl = None
+                if is_limit:
+                    entry = float(exchange.priceToPrecision(symbol, entry))
+                    if sl is not None:
+                        s = float(sl)
+                        if (side == "buy" and s >= entry) or (side == "sell" and s <= entry):
+                            logger.error(
+                                f"[sl] Invalid SL for {symbol}: sl={s}, entry={entry}, "
+                                f"side={side}. Falling back to the computed default SL."
+                            )
+                            sl = None
+                    order = exchange.create_order(
+                        symbol=symbol,
+                        type="limit",
+                        side=side,
+                        amount=quantity,
+                        price=entry,
+                        params={"timeInForce": "Gtc"},
+                    )
+                    logger.info(f"[limit] entry order: {order}")
+                    FutureOrder.objects.create(
+                        order_id=str(order["id"]),
+                        symbol=raw_symbol,
+                        direction=position_direction,
+                        status=FutureOrder.TradeStatus.OPEN,
+                        exchange=FutureOrder.ExchangeType.HYPERLIQUID,
+                        leverage=leverage,
+                        order_quantity=quantity,
+                        entry_price=entry,
+                        entry_fee_currency="USDC",
+                        stop_loss_order_id=f"PENDING-{uuid4()}",
+                        stop_loss_price=0,
+                        stop_loss_status=FutureOrder.TradeStatus.CANCELLED,
+                        pending_sl=sl,
+                        pending_tps=build_pending_tps(tps, tp),
+                        user=user,
+                    )
+                    return True
+
+                decision.mark_submitting()
                 order = exchange.create_order(
                     symbol=symbol,
-                    type="limit",
+                    type="market",
                     side=side,
                     amount=quantity,
-                    price=entry,
-                    params={"timeInForce": "Gtc"},
+                    price=current_price_of_symbol,
                 )
-                logger.info(f"[limit] entry order: {order}")
-                FutureOrder.objects.create(
-                    order_id=str(order["id"]),
+                logger.info(f"order: {order}")
+
+
+                # HyperLiquid's unified order response carries no fee breakdown
+                # (unlike Binance) — fee tracking is left at zero here.
+                entry_fee = 0
+                entry_fee_currency = "USDC"
+                total_fee = 0
+                entry_price = order.get("average") or current_price_of_symbol
+
+                # Persist the position NOW, before attempting SL/TP, so it is
+                # tracked even if everything below fails. A bad TP price used to
+                # raise all the way past the point where this row used to be
+                # created, leaving a real, live position on HyperLiquid (with or
+                # without an SL) completely invisible to our dashboard and
+                # refresh/risk-limit systems. SL fields start out as "no
+                # protection yet" and are updated in place once SL placement
+                # below resolves. Note: deliberately not re-fetching this order
+                # via fetch_order() first — HyperLiquid's orderStatus endpoint
+                # reports no fill price once an order is queried after the fact
+                # (only its own preset limit price), so re-fetching here would
+                # silently replace the correct average from the create response
+                # above with a wrong/misleading one.
+                fobj = FutureOrder.objects.create(
+                    order_id=order["id"],
                     symbol=raw_symbol,
                     direction=position_direction,
-                    status=FutureOrder.TradeStatus.OPEN,
                     exchange=FutureOrder.ExchangeType.HYPERLIQUID,
                     leverage=leverage,
                     order_quantity=quantity,
-                    entry_price=entry,
-                    entry_fee_currency="USDC",
+                    entry_price=entry_price,
+                    entry_fee=entry_fee,
+                    entry_fee_currency=entry_fee_currency,
+                    total_fee=total_fee,
                     stop_loss_order_id=f"PENDING-{uuid4()}",
                     stop_loss_price=0,
                     stop_loss_status=FutureOrder.TradeStatus.CANCELLED,
-                    pending_sl=sl,
-                    pending_tps=build_pending_tps(tps, tp),
                     user=user,
                 )
-                return True
+                decision.confirm(order["id"])
 
-            order = exchange.create_order(
-                symbol=symbol,
-                type="market",
-                side=side,
-                amount=quantity,
-                price=current_price_of_symbol,
-            )
-            logger.info(f"order: {order}")
+                return place_hyperliquid_futures_protection(
+                    exchange, fobj, symbol, side, quantity, current_price_of_symbol, sl, tp, tps, user
+                )
 
-
-            # HyperLiquid's unified order response carries no fee breakdown
-            # (unlike Binance) — fee tracking is left at zero here.
-            entry_fee = 0
-            entry_fee_currency = "USDC"
-            total_fee = 0
-            entry_price = order.get("average") or current_price_of_symbol
-
-            # Persist the position NOW, before attempting SL/TP, so it is
-            # tracked even if everything below fails. A bad TP price used to
-            # raise all the way past the point where this row used to be
-            # created, leaving a real, live position on HyperLiquid (with or
-            # without an SL) completely invisible to our dashboard and
-            # refresh/risk-limit systems. SL fields start out as "no
-            # protection yet" and are updated in place once SL placement
-            # below resolves. Note: deliberately not re-fetching this order
-            # via fetch_order() first — HyperLiquid's orderStatus endpoint
-            # reports no fill price once an order is queried after the fact
-            # (only its own preset limit price), so re-fetching here would
-            # silently replace the correct average from the create response
-            # above with a wrong/misleading one.
-            fobj = FutureOrder.objects.create(
-                order_id=order["id"],
-                symbol=raw_symbol,
-                direction=position_direction,
-                exchange=FutureOrder.ExchangeType.HYPERLIQUID,
-                leverage=leverage,
-                order_quantity=quantity,
-                entry_price=entry_price,
-                entry_fee=entry_fee,
-                entry_fee_currency=entry_fee_currency,
-                total_fee=total_fee,
-                stop_loss_order_id=f"PENDING-{uuid4()}",
-                stop_loss_price=0,
-                stop_loss_status=FutureOrder.TradeStatus.CANCELLED,
-                user=user,
-            )
-
-            return place_hyperliquid_futures_protection(
-                exchange, fobj, symbol, side, quantity, current_price_of_symbol, sl, tp, tps, user
-            )
+            if scope.error is not None:
+                logger.error(
+                    f"Error creating HyperLiquid futures order for {user.username}: {scope.error}",
+                    exc_info=scope.error,
+                )
+                return False
 
     except Exception as e:
         logger.error(

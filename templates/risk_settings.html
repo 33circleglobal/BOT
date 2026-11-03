@@ -93,24 +93,31 @@
               stale after {{ hl.snapshot.stale_after_sec }}s.
             </div>
             {% if hl.profile %}
+              {% if hl.profile.spot_pct %}
               <table class="table table-sm mb-2">
-                <thead><tr><th></th><th>Effective %</th><th>Target %</th></tr></thead>
+                <thead><tr><th>Both / Unified pool</th><th>Policy %</th></tr></thead>
                 <tbody>
-                  <tr><td>Spot</td><td>{{ hl.profile.spot_pct }}</td><td>{{ hl.profile.target_spot_pct|default:"&ndash;" }}</td></tr>
-                  <tr><td>Futures</td><td>{{ hl.profile.futures_pct }}</td><td>{{ hl.profile.target_futures_pct|default:"&ndash;" }}</td></tr>
-                  <tr><td>Reserve</td><td>{{ hl.profile.reserve_pct }}</td><td></td></tr>
+                  <tr><td>Spot pool</td><td>{{ hl.profile.spot_pct }}</td></tr>
+                  <tr><td>Shared futures margin pool</td><td>{{ hl.profile.futures_pct }}</td></tr>
+                  <tr><td>Minimum controller reserve</td><td>{{ hl.profile.reserve_pct }}</td></tr>
                 </tbody>
               </table>
+              <div class="small text-muted mb-1">
+                Fundable slots: spot {{ hl.profile.fundable_spot_max }} &middot; futures total {{ hl.profile.fundable_futures_total_max }}.
+              </div>
+              {% endif %}
               <div class="small text-muted">
                 Max spot {{ hl.profile.max_spot }} &middot; max long {{ hl.profile.max_long }} &middot;
                 max short {{ hl.profile.max_short }} &middot; max futures total {{ hl.profile.max_total }}.
-                Orders are sized from the <em>effective</em> pool (spot {{ hl.snapshot.spot_trade_pct_of_pool }}% per trade;
-                futures margin {{ hl.snapshot.futures_margin_pct_of_pool }}% per trade, {{ hl.snapshot.futures_leverage }}x isolated),
-                not the "% of available balance" fields below.
+                Orders are sized from <em>entry equity</em> (spot {{ hl.snapshot.spot_trade_pct_of_pool }}% per trade;
+                futures margin {{ hl.snapshot.futures_margin_pct_of_pool }}% per trade, up to {{ hl.snapshot.futures_leverage }}x isolated),
+                not the "% of available balance" fields below. A live 20% cash reserve, a gross futures notional cap
+                and an aggregate stop-risk cap also apply.
               </div>
+              {% if hl.baseline %}<div class="small text-muted">Policy baseline equity {{ hl.baseline.baseline_equity }} USDC ({{ hl.baseline.refresh_reason }}); active reservations: {{ hl.active_reservations }}.</div>{% endif %}
             {% endif %}
           {% else %}
-            <div class="alert alert-danger py-2 px-3 mb-2">No 122Moon controller update accepted yet &mdash; new HyperLiquid entries are blocked.</div>
+            <div class="alert alert-danger py-2 px-3 mb-2">No V4.3.1 risk heartbeat accepted yet &mdash; new HyperLiquid entries are blocked.</div>
           {% endif %}
           {% if hl.recent_rejections %}
             <div class="small text-muted">Recent blocked entries:

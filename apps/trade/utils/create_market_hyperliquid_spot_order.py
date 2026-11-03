@@ -8,7 +8,7 @@ from apps.trade.utils.hyperliquid_common import (
     get_hyperliquid_last_price,
 )
 from apps.trade.utils.risk_guard import can_open_spot_position
-from apps.trade.utils.market_risk import size_entry
+from apps.trade.utils.market_risk import EntryDecision, reservation_scope, size_entry
 from apps.trade.utils.locks import user_trade_open_lock
 
 import ccxt
@@ -297,129 +297,145 @@ def create_hyperliquid_spot_order(
 
             balance = exchange.fetch_balance(params={"type": "spot"})
 
-            if side == "buy":
-                user_balance = float((balance.get("free") or {}).get("USDC") or 0)
-                # 122Moon V3.2 sizing: 15% of the *effective spot pool*,
-                # clipped to uncommitted pool capacity and free collateral.
-                decision = size_entry(user, "spot", user_balance, None, raw_symbol)
-                if not decision.allowed:
-                    logger.info(
-                        f"[risk] Skipping HyperLiquid spot order for {user.username} "
-                        f"{raw_symbol}: {decision.reason}"
+            scope = reservation_scope(EntryDecision(allowed=True))
+            with scope:
+                if side == "buy":
+                    user_balance = float((balance.get("free") or {}).get("USDC") or 0)
+                    # V4.3.1 sizing: 15% of *entry equity*, gated by the
+                    # Both/Unified spot pool, live reserve and a reservation.
+                    decision = scope.decision = size_entry(
+                        user, "spot", user_balance, None, raw_symbol,
+                        equity_usdc=(balance.get("total") or {}).get("USDC"),
+                    )
+                    if not decision.allowed:
+                        logger.info(
+                            f"[risk] Skipping HyperLiquid spot order for {user.username} "
+                            f"{raw_symbol}: {decision.reason}"
+                        )
+                        return False
+                    user_usable_balance = float(decision.budget)
+                    # Size off the price we'll actually fill at.
+                    quantity = user_usable_balance / (entry if is_limit else current_price_of_symbol)
+                else:
+                    base_currency = symbol.split("/")[0]
+                    user_balance = float((balance.get("free") or {}).get(base_currency) or 0)
+                    quantity = user_balance * position / 100
+
+                min_amount = float(
+                    ((market.get("limits") or {}).get("amount") or {}).get("min") or 0
+                )
+                if quantity < min_amount:
+                    logger.error(
+                        f"Order quantity {quantity} is below minimum {min_amount} for {symbol}"
                     )
                     return False
-                user_usable_balance = float(decision.budget)
-                # Size off the price we'll actually fill at.
-                quantity = user_usable_balance / (entry if is_limit else current_price_of_symbol)
-            else:
-                base_currency = symbol.split("/")[0]
-                user_balance = float((balance.get("free") or {}).get(base_currency) or 0)
-                quantity = user_balance * position / 100
 
-            min_amount = float(
-                ((market.get("limits") or {}).get("amount") or {}).get("min") or 0
-            )
-            if quantity < min_amount:
-                logger.error(
-                    f"Order quantity {quantity} is below minimum {min_amount} for {symbol}"
+                min_notional = float(
+                    ((market.get("limits") or {}).get("cost") or {}).get("min") or 0
                 )
-                return False
+                notional_value = quantity * (entry if is_limit else current_price_of_symbol)
+                if notional_value < min_notional:
+                    logger.error(
+                        f"Order notional value {notional_value} is below minimum "
+                        f"{min_notional} for {symbol}"
+                    )
+                    return False
 
-            min_notional = float(
-                ((market.get("limits") or {}).get("cost") or {}).get("min") or 0
-            )
-            notional_value = quantity * (entry if is_limit else current_price_of_symbol)
-            if notional_value < min_notional:
-                logger.error(
-                    f"Order notional value {notional_value} is below minimum "
-                    f"{min_notional} for {symbol}"
-                )
-                return False
+                quantity = float(exchange.amountToPrecision(symbol, quantity))
 
-            quantity = float(exchange.amountToPrecision(symbol, quantity))
+                if quantity <= 0:
+                    logger.error(f"Insufficient balance for {symbol} {side} order")
+                    return False
 
-            if quantity <= 0:
-                logger.error(f"Insufficient balance for {symbol} {side} order")
-                return False
+                if is_limit:
+                    entry = float(exchange.priceToPrecision(symbol, entry))
+                    scope.decision.mark_submitting()
+                    order = exchange.create_order(
+                        symbol=symbol,
+                        type="limit",
+                        side=side,
+                        amount=quantity,
+                        price=entry,
+                        params={"timeInForce": "Gtc"},
+                    )
+                    logger.info(f"[limit] HyperLiquid spot entry order: {order}")
+                    SpotOrder.objects.create(
+                        order_id=str(order["id"]),
+                        status=SpotOrder.TradeStatus.OPEN,
+                        entry_price=entry,
+                        direction=SpotOrder.TradeDirection.LONG,
+                        order_quantity=quantity,
+                        final_quantity=0,
+                        entry_fee_currency="USDC",
+                        symbol=raw_symbol,
+                        is_spot=True,
+                        total_cost=notional_value,
+                        exchange=SpotOrder.ExchangeType.HYPERLIQUID,
+                        stop_loss_status=SpotOrder.TradeStatus.CANCELLED,
+                        pending_sl=sl,
+                        pending_tps=build_pending_tps(tps, tp),
+                        pending_dca=dca,
+                        user=user,
+                    )
+                    scope.decision.confirm(order["id"])
+                    return True
 
-            if is_limit:
-                entry = float(exchange.priceToPrecision(symbol, entry))
+                scope.decision.mark_submitting()
                 order = exchange.create_order(
                     symbol=symbol,
-                    type="limit",
+                    type="market",
                     side=side,
                     amount=quantity,
-                    price=entry,
-                    params={"timeInForce": "Gtc"},
+                    price=current_price_of_symbol,
                 )
-                logger.info(f"[limit] HyperLiquid spot entry order: {order}")
-                SpotOrder.objects.create(
-                    order_id=str(order["id"]),
-                    status=SpotOrder.TradeStatus.OPEN,
-                    entry_price=entry,
-                    direction=SpotOrder.TradeDirection.LONG,
+
+                # HyperLiquid's unified order response carries no fee breakdown
+                # (unlike Binance) — fee tracking is left at zero here.
+                entry_fee_cost = 0
+                entry_fee_currency = "USDC"
+
+                position_direction = (
+                    SpotOrder.TradeDirection.LONG
+                    if side == "buy"
+                    else SpotOrder.TradeDirection.SHORT
+                )
+
+                entry_price = float(order.get("average") or current_price_of_symbol)
+
+                created = SpotOrder.objects.create(
+                    order_id=order["id"],
+                    entry_price=entry_price,
+                    direction=position_direction,
                     order_quantity=quantity,
-                    final_quantity=0,
-                    entry_fee_currency="USDC",
+                    final_quantity=quantity,
+                    entry_fee=entry_fee_cost,
+                    entry_fee_currency=entry_fee_currency,
+                    total_fee=0,
                     symbol=raw_symbol,
                     is_spot=True,
                     total_cost=notional_value,
                     exchange=SpotOrder.ExchangeType.HYPERLIQUID,
-                    stop_loss_status=SpotOrder.TradeStatus.CANCELLED,
-                    pending_sl=sl,
-                    pending_tps=build_pending_tps(tps, tp),
-                    pending_dca=dca,
                     user=user,
+                )
+                scope.decision.confirm(order["id"])
+
+                place_hyperliquid_spot_protection(
+                    exchange, created, market, symbol, side, quantity,
+                    float(current_price_of_symbol), entry_price, sl, tp, tps, dca, user,
+                )
+
+                logger.info(
+                    f"HyperLiquid spot {side} order created for {user.username}: "
+                    f"{quantity} {symbol} at {entry_price}."
                 )
                 return True
 
-            order = exchange.create_order(
-                symbol=symbol,
-                type="market",
-                side=side,
-                amount=quantity,
-                price=current_price_of_symbol,
-            )
-
-            # HyperLiquid's unified order response carries no fee breakdown
-            # (unlike Binance) — fee tracking is left at zero here.
-            entry_fee_cost = 0
-            entry_fee_currency = "USDC"
-
-            position_direction = (
-                SpotOrder.TradeDirection.LONG
-                if side == "buy"
-                else SpotOrder.TradeDirection.SHORT
-            )
-
-            entry_price = float(order.get("average") or current_price_of_symbol)
-
-            created = SpotOrder.objects.create(
-                order_id=order["id"],
-                entry_price=entry_price,
-                direction=position_direction,
-                order_quantity=quantity,
-                final_quantity=quantity,
-                entry_fee=entry_fee_cost,
-                entry_fee_currency=entry_fee_currency,
-                total_fee=0,
-                symbol=raw_symbol,
-                is_spot=True,
-                total_cost=notional_value,
-                exchange=SpotOrder.ExchangeType.HYPERLIQUID,
-                user=user,
-            )
-
-            place_hyperliquid_spot_protection(
-                exchange, created, market, symbol, side, quantity,
-                float(current_price_of_symbol), entry_price, sl, tp, tps, dca, user,
-            )
-
-            logger.info(
-                f"HyperLiquid spot {side} order created for {user.username}: "
-                f"{quantity} {symbol} at {entry_price}."
-            )
-            return True
+            if scope.error is not None:
+                logger.error(
+                    f"Error creating HyperLiquid spot order for {user.username}: {scope.error}",
+                    exc_info=scope.error,
+                )
+                return False
 
     except ccxt.InsufficientFunds as e:
         logger.error(f"Insufficient funds for {user.username}: {str(e)}")

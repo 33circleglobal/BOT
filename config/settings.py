@@ -202,7 +202,7 @@ CACHES = {
     }
 }
 
-# --- 122Moon V3.2 HyperLiquid market-risk controller --------------------------
+# --- Throneex HyperLiquid V4.3.1 (schema 9) market-risk controller --------------------------
 # Shared secret the controller webhook must present (X-Webhook-Secret header or
 # ?secret= query param). Empty => no auth required (temporary; set it to enforce).
 TRADINGVIEW_WEBHOOK_SECRET = config("TRADINGVIEW_WEBHOOK_SECRET", default="")
@@ -210,5 +210,14 @@ TRADINGVIEW_WEBHOOK_SECRET = config("TRADINGVIEW_WEBHOOK_SECRET", default="")
 HL_HARD_MAX_SPOT_POSITIONS = config("HL_HARD_MAX_SPOT_POSITIONS", default=20, cast=int)
 HL_HARD_MAX_FUTURES_POSITIONS = config("HL_HARD_MAX_FUTURES_POSITIONS", default=20, cast=int)
 HL_HARD_MAX_LEVERAGE = config("HL_HARD_MAX_LEVERAGE", default=5, cast=int)
+# Throneex HyperLiquid V4.3.1 backend-owned safeguards (apply to every member
+# mode). Proposed reference defaults from the handoff; tune per deployment.
+HL_KILL_SWITCH = config("HL_KILL_SWITCH", default=False, cast=bool)  # blocks all new HL entries
+HL_MIN_RESERVE_PCT = config("HL_MIN_RESERVE_PCT", default=20, cast=float)  # of max(live, baseline) equity
+HL_MAX_GROSS_FUTURES_NOTIONAL_PCT = config("HL_MAX_GROSS_FUTURES_NOTIONAL_PCT", default=120, cast=float)
+HL_MAX_AGG_STOP_RISK_PCT = config("HL_MAX_AGG_STOP_RISK_PCT", default=4, cast=float)  # 0 disables
+HL_ENTRY_COST_BUFFER_PCT = config("HL_ENTRY_COST_BUFFER_PCT", default=0.15, cast=float)  # fees+slippage, % of notional
+HL_DEFAULT_STALE_AFTER_SEC = config("HL_DEFAULT_STALE_AFTER_SEC", default=5400, cast=int)  # 90 min
+HL_PENDING_RESERVATION_TTL_SEC = config("HL_PENDING_RESERVATION_TTL_SEC", default=600, cast=int)
 # Upper bound accepted for the controller's stale_after_sec.
 HL_MAX_STALE_AFTER_SEC = config("HL_MAX_STALE_AFTER_SEC", default=21600, cast=int)
