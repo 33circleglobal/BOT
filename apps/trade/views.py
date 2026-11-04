@@ -15,7 +15,7 @@ from apps.trade.task import (
     forward_webhook,
 )
 
-from apps.trade.models import FutureOrder, FutureTakeProfit, TradeSettings, WebhookLog, RiskDecisionLog, HLEquityBaseline, HLOrderReservation
+from apps.trade.models import FutureOrder, FutureTakeProfit, TradeSettings, WebhookLog, RiskDecisionLog, HLEquityBaseline, HLOrderReservation, WebhookForwardTarget
 from apps.trade.utils import market_risk
 import hmac
 import logging
@@ -95,7 +95,7 @@ def _handle_market_risk_v5(request, payload, log):
 
 
 def _forward_if_processed(request, response):
-    """Forwards an accepted webhook to the configured extra URLs: risk-setting
+    """Forwards an accepted webhook to the extra URLs configured in the DB (WebhookForwardTarget): risk-setting
     messages to the risk URLs, trade signals to the trade URLs. Unauthorized,
     rejected, errored and duplicate (ignored) deliveries are never forwarded."""
     log = getattr(request, "_webhook_log", None)
@@ -106,15 +106,16 @@ def _forward_if_processed(request, response):
         or (log.error_message or "").startswith("Ignored")
     ):
         return
-    urls = (
-        settings.WEBHOOK_FORWARD_RISK_URLS
+    kind = (
+        WebhookForwardTarget.Kind.RISK
         if log.action == "update_market_risk"
-        else settings.WEBHOOK_FORWARD_TRADE_URLS
+        else WebhookForwardTarget.Kind.TRADE
     )
-    if not urls:
-        return
     try:
-        forward_webhook.delay(list(urls), log.raw_body)
+        urls = WebhookForwardTarget.urls_for(kind)
+        if not urls:
+            return
+        forward_webhook.delay(urls, log.raw_body, kind)
     except Exception:  # forwarding must never break the primary webhook
         logger.exception("Could not enqueue webhook forward")
 

@@ -5,3 +5,4 @@ from .spot_take_profit import SpotTakeProfit
 from .trade_settings import TradeSettings
 from .webhook_log import WebhookLog
 from .market_risk_snapshot import HLEquityBaseline, HLOrderReservation, MarketRiskSnapshot, RiskDecisionLog
+from .webhook_forward_target import WebhookForwardLog, WebhookForwardTarget

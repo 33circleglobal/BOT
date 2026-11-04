@@ -8,6 +8,8 @@ from .models import (
     SpotTakeProfit,
     TradeSettings,
     WebhookLog,
+    WebhookForwardTarget,
+    WebhookForwardLog,
 )
 
 # Register your models here.
@@ -97,3 +99,24 @@ class WebhookLogAdmin(admin.ModelAdmin):
         "remote_addr",
         "created_at",
     ]
+
+
+@admin.register(WebhookForwardTarget)
+class WebhookForwardTargetAdmin(admin.ModelAdmin):
+    list_display = ("kind", "url", "enabled", "note")
+    list_filter = ("kind", "enabled")
+    list_editable = ("enabled",)
+
+
+@admin.register(WebhookForwardLog)
+class WebhookForwardLogAdmin(admin.ModelAdmin):
+    list_display = ("created_at", "kind", "url", "ok", "status_code", "error", "event_id", "duration_ms")
+    list_filter = ("kind", "ok", "status_code")
+    search_fields = ("url", "event_id", "error")
+    date_hierarchy = "created_at"
+
+    def has_add_permission(self, request):
+        return False
+
+    def has_change_permission(self, request, obj=None):
+        return False

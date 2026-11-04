@@ -799,19 +799,21 @@ class GateTests(HLBase):
 
 @override_settings(
     TRADINGVIEW_WEBHOOK_SECRET=SECRET,
-    WEBHOOK_FORWARD_RISK_URLS=["https://other.example/risk?secret=x"],
-    WEBHOOK_FORWARD_TRADE_URLS=["https://other.example/trade"],
 )
 class WebhookForwardingTests(TestCase):
     def setUp(self):
+        from apps.trade.models import WebhookForwardTarget as T
         self.client = Client()
+        T.objects.create(kind="risk", url="https://other.example/risk?secret=x")
+        T.objects.create(kind="trade", url="https://other.example/trade")
+        T.objects.create(kind="trade", url="https://off.example/trade", enabled=False)
 
     @patch("apps.trade.views.forward_webhook")
     def test_risk_heartbeat_forwarded_to_risk_urls_once(self, fwd):
         p = make_payload()
         self.assertEqual(post(self.client, p).status_code, 200)
         fwd.delay.assert_called_once()
-        urls, body = fwd.delay.call_args[0]
+        urls, body, kind = fwd.delay.call_args[0]
         self.assertEqual(urls, ["https://other.example/risk?secret=x"])
         self.assertEqual(json.loads(body)["event_id"], p["event_id"])
         # Duplicate delivery is not forwarded again.
@@ -836,5 +838,11 @@ class WebhookForwardingTests(TestCase):
     def test_forward_task_isolates_failures(self, post_mock):
         from apps.trade.task import forward_webhook as task
         post_mock.side_effect = [Exception("boom"), type("R", (), {"status_code": 200})()]
-        task(["https://a.example/x", "https://b.example/y"], "{}")
+        task(["https://a.example/x?secret=s", "https://b.example/y"], '{"event_id": "E1"}', "risk")
         self.assertEqual(post_mock.call_count, 2)
+        from apps.trade.models import WebhookForwardLog
+        rows = list(WebhookForwardLog.objects.order_by("id"))
+        self.assertEqual([(r.ok, r.status_code) for r in rows], [(False, None), (True, 200)])
+        self.assertEqual(rows[0].url, "https://a.example/x")
+        self.assertNotIn("secret", rows[0].error)
+        self.assertEqual(rows[0].event_id, "E1")

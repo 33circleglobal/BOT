@@ -35,12 +35,23 @@ logger = logging.getLogger(__name__)
 
 
 @celery_app.task
-def forward_webhook(urls, raw_body):
+def forward_webhook(urls, raw_body, kind=""):
     """Best-effort re-POST of an accepted webhook body to other deployments.
     One target failing never affects the others or the original request.
-    URLs may carry secrets, so only the host is logged."""
+    Each attempt is recorded in WebhookForwardLog (URL without query string,
+    since URLs may carry secrets)."""
+    import json
+    import time
+    from apps.trade.models import WebhookForwardLog
+
+    try:
+        event_id = str(json.loads(raw_body).get("event_id", ""))[:120]
+    except Exception:
+        event_id = ""
     for url in urls:
-        host = url.split("//", 1)[-1].split("/", 1)[0]
+        safe = url.split("?", 1)[0]
+        started = time.monotonic()
+        status, err = None, ""
         try:
             r = requests.post(
                 url,
@@ -48,9 +59,20 @@ def forward_webhook(urls, raw_body):
                 headers={"Content-Type": "application/json"},
                 timeout=settings.WEBHOOK_FORWARD_TIMEOUT_SEC,
             )
-            logger.info("[forward] %s -> HTTP %s", host, r.status_code)
+            status = r.status_code
+            logger.info("[forward] %s -> HTTP %s", safe, status)
         except Exception as e:
-            logger.warning("[forward] %s failed: %s", host, type(e).__name__)
+            err = f"{type(e).__name__}: {e}"[:300].replace(url, safe)
+            logger.warning("[forward] %s failed: %s", safe, type(e).__name__)
+        try:
+            WebhookForwardLog.objects.create(
+                kind=kind, url=safe[:500], ok=bool(status and status < 400),
+                status_code=status, error=err, event_id=event_id,
+                duration_ms=int((time.monotonic() - started) * 1000),
+            )
+        except Exception:
+            logger.exception("[forward] could not record attempt")
+
 
 # Rows created before multi-exchange support (or by legacy Binance signals
 # that don't pass an "exchange" field) may carry either BINANCE or

@@ -224,14 +224,6 @@ HL_MAX_STALE_AFTER_SEC = config("HL_MAX_STALE_AFTER_SEC", default=21600, cast=in
 
 
 # --- Webhook forwarding (staging / second project) ---------------------------
-# Comma-separated URLs. After a webhook is accepted and processed here, the raw
-# body is re-POSTed (best effort, async) to these. Risk-setting messages
-# ("update_market_risk") go to the RISK urls; everything else (trade signals)
-# goes to the TRADE urls. No secret/header is added to forwarded requests.
-def _url_list(name):
-    return [u.strip() for u in config(name, default="").split(",") if u.strip()]
-
-
-WEBHOOK_FORWARD_TRADE_URLS = _url_list("WEBHOOK_FORWARD_TRADE_URLS")
-WEBHOOK_FORWARD_RISK_URLS = _url_list("WEBHOOK_FORWARD_RISK_URLS")
+# Target URLs live in the DB (admin: Webhook forward targets), not in env.
+# No secret/header is added to forwarded requests.
 WEBHOOK_FORWARD_TIMEOUT_SEC = config("WEBHOOK_FORWARD_TIMEOUT_SEC", default=10, cast=int)
