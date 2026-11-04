@@ -221,3 +221,17 @@ HL_DEFAULT_STALE_AFTER_SEC = config("HL_DEFAULT_STALE_AFTER_SEC", default=5400, 
 HL_PENDING_RESERVATION_TTL_SEC = config("HL_PENDING_RESERVATION_TTL_SEC", default=600, cast=int)
 # Upper bound accepted for the controller's stale_after_sec.
 HL_MAX_STALE_AFTER_SEC = config("HL_MAX_STALE_AFTER_SEC", default=21600, cast=int)
+
+
+# --- Webhook forwarding (staging / second project) ---------------------------
+# Comma-separated URLs. After a webhook is accepted and processed here, the raw
+# body is re-POSTed (best effort, async) to these. Risk-setting messages
+# ("update_market_risk") go to the RISK urls; everything else (trade signals)
+# goes to the TRADE urls. No secret/header is added to forwarded requests.
+def _url_list(name):
+    return [u.strip() for u in config(name, default="").split(",") if u.strip()]
+
+
+WEBHOOK_FORWARD_TRADE_URLS = _url_list("WEBHOOK_FORWARD_TRADE_URLS")
+WEBHOOK_FORWARD_RISK_URLS = _url_list("WEBHOOK_FORWARD_RISK_URLS")
+WEBHOOK_FORWARD_TIMEOUT_SEC = config("WEBHOOK_FORWARD_TIMEOUT_SEC", default=10, cast=int)

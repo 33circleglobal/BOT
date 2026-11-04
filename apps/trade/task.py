@@ -28,7 +28,29 @@ from apps.trade.utils.hyperliquid_common import get_public_hyperliquid_markets
 
 import logging
 
+import requests
+from django.conf import settings
+
 logger = logging.getLogger(__name__)
+
+
+@celery_app.task
+def forward_webhook(urls, raw_body):
+    """Best-effort re-POST of an accepted webhook body to other deployments.
+    One target failing never affects the others or the original request.
+    URLs may carry secrets, so only the host is logged."""
+    for url in urls:
+        host = url.split("//", 1)[-1].split("/", 1)[0]
+        try:
+            r = requests.post(
+                url,
+                data=raw_body.encode("utf-8"),
+                headers={"Content-Type": "application/json"},
+                timeout=settings.WEBHOOK_FORWARD_TIMEOUT_SEC,
+            )
+            logger.info("[forward] %s -> HTTP %s", host, r.status_code)
+        except Exception as e:
+            logger.warning("[forward] %s failed: %s", host, type(e).__name__)
 
 # Rows created before multi-exchange support (or by legacy Binance signals
 # that don't pass an "exchange" field) may carry either BINANCE or

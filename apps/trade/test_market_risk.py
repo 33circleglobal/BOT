@@ -795,3 +795,46 @@ class GateTests(HLBase):
         # No HL snapshot exists, yet a Binance entry on an empty book is allowed.
         FutureOrder.objects.all().delete()
         self.assertTrue(can_open_futures_position(self.user, "SOLUSDT", "LONG", exchange="BINANCE_FUTURES")[0])
+
+
+@override_settings(
+    TRADINGVIEW_WEBHOOK_SECRET=SECRET,
+    WEBHOOK_FORWARD_RISK_URLS=["https://other.example/risk?secret=x"],
+    WEBHOOK_FORWARD_TRADE_URLS=["https://other.example/trade"],
+)
+class WebhookForwardingTests(TestCase):
+    def setUp(self):
+        self.client = Client()
+
+    @patch("apps.trade.views.forward_webhook")
+    def test_risk_heartbeat_forwarded_to_risk_urls_once(self, fwd):
+        p = make_payload()
+        self.assertEqual(post(self.client, p).status_code, 200)
+        fwd.delay.assert_called_once()
+        urls, body = fwd.delay.call_args[0]
+        self.assertEqual(urls, ["https://other.example/risk?secret=x"])
+        self.assertEqual(json.loads(body)["event_id"], p["event_id"])
+        # Duplicate delivery is not forwarded again.
+        post(self.client, p)
+        self.assertEqual(fwd.delay.call_count, 1)
+
+    @patch("apps.trade.views.forward_webhook")
+    def test_rejected_or_unauthorized_not_forwarded(self, fwd):
+        post(self.client, make_payload(schema_version=5))
+        post(self.client, make_payload(), secret="wrong")
+        fwd.delay.assert_not_called()
+
+    @patch("apps.trade.views.handle_futures_signal_controller")
+    @patch("apps.trade.views.forward_webhook")
+    def test_trade_signal_forwarded_to_trade_urls(self, fwd, _task):
+        r = self.client.post("/webhook/", data=json.dumps(
+            {"symbol": "BTCUSDT", "side": "buy", "market": "futures"}), content_type="application/json")
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(fwd.delay.call_args[0][0], ["https://other.example/trade"])
+
+    @patch("apps.trade.task.requests.post")
+    def test_forward_task_isolates_failures(self, post_mock):
+        from apps.trade.task import forward_webhook as task
+        post_mock.side_effect = [Exception("boom"), type("R", (), {"status_code": 200})()]
+        task(["https://a.example/x", "https://b.example/y"], "{}")
+        self.assertEqual(post_mock.call_count, 2)

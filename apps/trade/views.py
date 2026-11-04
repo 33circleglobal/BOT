@@ -12,6 +12,7 @@ from apps.trade.task import (
     handle_futures_signal_controller,
     create_order_of_user,
     handle_futures_signal,
+    forward_webhook,
 )
 
 from apps.trade.models import FutureOrder, FutureTakeProfit, TradeSettings, WebhookLog, RiskDecisionLog, HLEquityBaseline, HLOrderReservation
@@ -93,8 +94,39 @@ def _handle_market_risk_v5(request, payload, log):
     )
 
 
+def _forward_if_processed(request, response):
+    """Forwards an accepted webhook to the configured extra URLs: risk-setting
+    messages to the risk URLs, trade signals to the trade URLs. Unauthorized,
+    rejected, errored and duplicate (ignored) deliveries are never forwarded."""
+    log = getattr(request, "_webhook_log", None)
+    if (
+        log is None
+        or log.status != WebhookLog.Status.PROCESSED
+        or response.status_code >= 400
+        or (log.error_message or "").startswith("Ignored")
+    ):
+        return
+    urls = (
+        settings.WEBHOOK_FORWARD_RISK_URLS
+        if log.action == "update_market_risk"
+        else settings.WEBHOOK_FORWARD_TRADE_URLS
+    )
+    if not urls:
+        return
+    try:
+        forward_webhook.delay(list(urls), log.raw_body)
+    except Exception:  # forwarding must never break the primary webhook
+        logger.exception("Could not enqueue webhook forward")
+
+
 @csrf_exempt
 def trading_view_webhook(request):
+    response = _trading_view_webhook(request)
+    _forward_if_processed(request, response)
+    return response
+
+
+def _trading_view_webhook(request):
     if request.method != "POST":
         return JsonResponse(
             {"status": "error", "message": "Only POST requests are allowed"}, status=405
@@ -106,6 +138,7 @@ def trading_view_webhook(request):
         raw_body=request.body.decode("utf-8", errors="replace"),
         remote_addr=request.META.get("REMOTE_ADDR"),
     )
+    request._webhook_log = log
 
     try:
         payload = json.loads(request.body)
