@@ -103,9 +103,13 @@ class WebhookLogAdmin(admin.ModelAdmin):
 
 @admin.register(WebhookForwardTarget)
 class WebhookForwardTargetAdmin(admin.ModelAdmin):
-    list_display = ("kind", "url", "enabled", "note")
+    list_display = ("kind", "url", "has_secret", "enabled", "note")
     list_filter = ("kind", "enabled")
     list_editable = ("enabled",)
+
+    @admin.display(boolean=True, description="Secret")
+    def has_secret(self, obj):
+        return bool(obj.secret)
 
 
 @admin.register(WebhookForwardLog)
