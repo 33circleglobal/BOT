@@ -23,8 +23,12 @@ blocked by Binance-side positions alone exceeding the shared cap. Passing
 no `exchange` preserves the old bot-wide pooled behavior.
 """
 
-from apps.trade.models import FutureOrder, SpotOrder, TradeSettings
+import logging
+
+from apps.trade.models import FutureOrder, RiskDecisionLog, SpotOrder, TradeSettings
 from apps.trade.utils import market_risk
+
+logger = logging.getLogger(__name__)
 
 FUTURES_ONE_POSITION_PER_SYMBOL = True
 SPOT_ONE_POSITION_PER_SYMBOL = True
@@ -50,6 +54,18 @@ def _hl_one_per_symbol(model, user, symbol):
     ).exists()
 
 
+def _log_binance_block(user, market, symbol, direction, reason):
+    """Audit a blocked Binance entry so the Risk Settings page can list it."""
+    try:
+        RiskDecisionLog.objects.create(
+            user=user, exchange="BINANCE", market=market, symbol=(symbol or "")[:30],
+            direction=(str(direction) if direction else "")[:10],
+            allowed=False, reason=reason[:255],
+        )
+    except Exception:  # audit must never block or crash trading
+        logger.exception("Failed to write Binance RiskDecisionLog")
+
+
 def can_open_futures_position(user, symbol, direction, exchange=None):
     """Returns (allowed: bool, reason: str)."""
     if _is_hyperliquid(exchange):
@@ -63,6 +79,13 @@ def can_open_futures_position(user, symbol, direction, exchange=None):
             market_risk.log_decision(user, decision, symbol, direction)
         return decision.allowed, decision.reason
 
+    allowed, reason = _binance_futures_check(user, symbol, direction, exchange)
+    if not allowed:
+        _log_binance_block(user, "futures", symbol, direction, reason)
+    return allowed, reason
+
+
+def _binance_futures_check(user, symbol, direction, exchange):
     limits = TradeSettings.get_for_user(user)
 
     if limits.is_market_data_stale():
@@ -113,6 +136,13 @@ def can_open_spot_position(user, symbol, exchange=None):
             market_risk.log_decision(user, decision, symbol)
         return decision.allowed, decision.reason
 
+    allowed, reason = _binance_spot_check(user, symbol, exchange)
+    if not allowed:
+        _log_binance_block(user, "spot", symbol, "", reason)
+    return allowed, reason
+
+
+def _binance_spot_check(user, symbol, exchange):
     limits = TradeSettings.get_for_user(user)
 
     if limits.is_market_data_stale():

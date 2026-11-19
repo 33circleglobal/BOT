@@ -13,6 +13,7 @@ from apps.trade.task import (
     create_order_of_user,
     handle_futures_signal,
     forward_webhook,
+    cancel_pending_orders_for_symbol,
 )
 
 from apps.trade.models import FutureOrder, FutureTakeProfit, TradeSettings, WebhookLog, RiskDecisionLog, HLEquityBaseline, HLOrderReservation, WebhookForwardTarget
@@ -92,6 +93,31 @@ def _handle_market_risk_v5(request, payload, log):
     return JsonResponse(
         {"status": "success", "message": f"Market risk snapshot {snap.event_id} accepted"}
     )
+
+
+def _handle_cancel_pending_order(payload, log):
+    """Cancels resting (OPEN) limit entries for a symbol on one exchange/market;
+    open positions are left alone."""
+    symbol = str(payload.get("symbol") or "").strip()
+    market = str(payload.get("market") or "").strip().lower()
+    exchange = (
+        "hyperliquid"
+        if str(payload.get("exchange") or "").strip().lower() == "hyperliquid"
+        else "binance"
+    )
+    log.symbol, log.market, log.exchange = symbol, market, exchange
+    log.action = "CANCEL_PENDING_ORDER"
+    if not symbol or market not in ("futures", "spot"):
+        log.status = WebhookLog.Status.ERROR
+        log.error_message = "Missing/invalid symbol or market"
+        log.save()
+        return JsonResponse(
+            {"status": "error", "message": "Missing/invalid symbol or market"}, status=400
+        )
+    cancel_pending_orders_for_symbol.delay(symbol, market, exchange)
+    log.status = WebhookLog.Status.PROCESSED
+    log.save()
+    return JsonResponse({"status": "success", "message": "Pending order cancel received"})
 
 
 def _forward_if_processed(request, response):
@@ -200,6 +226,9 @@ def _trading_view_webhook(request):
             return JsonResponse(
                 {"status": "success", "message": f"Market risk updated for regime={regime}"}
             )
+
+        if str(payload.get("event") or "").strip().upper() == "CANCEL_PENDING_ORDER":
+            return _handle_cancel_pending_order(payload, log)
 
         symbol = payload.get("symbol")
         side = payload.get("side")
@@ -953,8 +982,27 @@ def risk_settings(request):
             "settings_obj": settings_obj,
             "market_data_stale": settings_obj.is_market_data_stale(),
             "hl": _hyperliquid_risk_context(request.user, settings_obj),
+            "bn": _binance_risk_context(request.user),
         },
     )
+
+
+def _binance_risk_context(user):
+    """Read-only Binance slot usage + recent blocked entries for the page."""
+    binance = ["BINANCE", "BINANCE_FUTURES"]
+    open_status = [FutureOrder.TradeStatus.POSITION, FutureOrder.TradeStatus.OPEN]
+    fut = FutureOrder.objects.filter(user=user, exchange__in=binance, status__in=open_status)
+    return {
+        "futures_open": fut.count(),
+        "futures_long": fut.filter(direction=FutureOrder.TradeDirection.LONG).count(),
+        "futures_short": fut.filter(direction=FutureOrder.TradeDirection.SHORT).count(),
+        "spot_open": SpotOrder.objects.filter(
+            user=user, exchange__in=binance, status__in=[SpotOrder.TradeStatus.POSITION, SpotOrder.TradeStatus.OPEN]
+        ).count(),
+        "recent_rejections": RiskDecisionLog.objects.filter(
+            user=user, allowed=False, exchange="BINANCE"
+        )[:5],
+    }
 
 
 def _hyperliquid_risk_context(user, settings_obj):
@@ -968,7 +1016,7 @@ def _hyperliquid_risk_context(user, settings_obj):
         "snapshot": snap,
         "fresh": market_risk.snapshot_is_fresh(snap),
         "profile": None,
-        "recent_rejections": RiskDecisionLog.objects.filter(user=user, allowed=False)[:5],
+        "recent_rejections": RiskDecisionLog.objects.filter(user=user, allowed=False, exchange="HYPERLIQUID")[:5],
         "baseline": HLEquityBaseline.objects.filter(user=user).first(),
         "active_reservations": HLOrderReservation.objects.filter(
             user=user, status__in=HLOrderReservation.ACTIVE

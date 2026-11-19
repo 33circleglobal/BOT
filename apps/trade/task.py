@@ -100,6 +100,35 @@ def _cancel_pending_spot_orders(user, symbol, exchange):
 
 
 @celery_app.task(bind=True)
+def cancel_pending_orders_for_symbol(self, symbol, market, exchange="binance"):
+    """CANCEL_PENDING_ORDER webhook: cancels every user's resting limit entry
+    (status OPEN) for `symbol` in the given exchange/market. Filled positions
+    (status POSITION) and their SL/TP orders are never touched. Idempotent:
+    only OPEN rows are selected, so a repeated delivery is a no-op."""
+    is_hl = exchange == "hyperliquid"
+    if market == "futures":
+        model, cancel = FutureOrder, (
+            cancel_pending_hyperliquid_limit_order if is_hl else cancel_pending_limit_order
+        )
+        exchanges = (FutureOrder.ExchangeType.HYPERLIQUID,) if is_hl else _BINANCE_EXCHANGES
+    else:
+        model, cancel = SpotOrder, (
+            cancel_pending_hyperliquid_spot_limit_order if is_hl else cancel_pending_spot_limit_order
+        )
+        exchanges = (SpotOrder.ExchangeType.HYPERLIQUID,) if is_hl else _BINANCE_SPOT_EXCHANGES
+    cancelled = 0
+    for pending in model.objects.filter(
+        symbol=symbol, status=model.TradeStatus.OPEN, exchange__in=exchanges
+    ):
+        try:
+            if cancel(pending):
+                cancelled += 1
+        except Exception as e:
+            logger.error(f"CANCEL_PENDING_ORDER: failed to cancel {market} order {pending.id}: {e}")
+    return cancelled
+
+
+@celery_app.task(bind=True)
 def create_order_of_user_controller(self, side, symbol, market, sl=None, tp=None, tps=None, dca=None, exchange="binance", order_type="market", entry=None):
     try:
         if exchange == "hyperliquid":

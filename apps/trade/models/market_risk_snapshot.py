@@ -52,9 +52,10 @@ class MarketRiskSnapshot(models.Model):
 
 
 class RiskDecisionLog(models.Model):
-    """Audit trail of HyperLiquid risk-gate decisions (allowed or rejected)."""
+    """Audit trail of risk-gate decisions (allowed or rejected), per exchange."""
 
     user = models.ForeignKey(User, on_delete=models.CASCADE, related_name="risk_decisions")
+    exchange = models.CharField(max_length=20, default="HYPERLIQUID")
     event_id = models.CharField(max_length=128, blank=True, default="")
     trading_mode = models.CharField(max_length=20, blank=True, default="")
     market = models.CharField(max_length=10)

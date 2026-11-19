@@ -163,6 +163,13 @@
             <div class="text-danger small">{{ error }}</div>
           {% endfor %}
         </div>
+        <div class="col-12">
+          <div class="small text-muted">
+            Max long {{ settings_obj.futures_max_long }} &middot; max short {{ settings_obj.futures_max_short }}
+            &middot; max futures total {{ settings_obj.futures_max_positions }}. Open/pending now:
+            {{ bn.futures_long }} long, {{ bn.futures_short }} short ({{ bn.futures_open }} total).
+          </div>
+        </div>
 
         <div class="col-12"><h6 class="text-uppercase text-muted small mt-3">Binance &mdash; Spot</h6></div>
         <div class="col-12 col-md-4">
@@ -179,6 +186,17 @@
           {% for error in form.spot_position_pct.errors %}
             <div class="text-danger small">{{ error }}</div>
           {% endfor %}
+        </div>
+
+        <div class="col-12">
+          <div class="small text-muted">
+            Max spot {{ settings_obj.spot_max_positions }}. Open/pending now: {{ bn.spot_open }}.
+          </div>
+          {% if bn.recent_rejections %}
+            <div class="small text-muted mt-2">Recent blocked Binance entries:
+              <ul class="mb-0">{% for r in bn.recent_rejections %}<li>{{ r.symbol }} {{ r.market }}: {{ r.reason }}</li>{% endfor %}</ul>
+            </div>
+          {% endif %}
         </div>
 
         <div class="col-12 mt-4">
