@@ -117,6 +117,16 @@ def get_hyperliquid_last_price(exchange, symbol):
         return None
 
 
+def is_stop_breached(entry_side: str, trigger_price: float, price) -> bool:
+    """True if `price` is already at or beyond the stop of a position opened
+    with `entry_side`. False if the price is unknown."""
+    if not price:
+        return False
+    if entry_side == "buy":
+        return float(price) <= float(trigger_price)
+    return float(price) >= float(trigger_price)
+
+
 def create_trigger_order(
     exchange,
     symbol,

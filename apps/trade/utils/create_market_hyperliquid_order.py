@@ -11,7 +11,9 @@ from apps.trade.utils.hyperliquid_common import (
     to_hyperliquid_symbol,
     create_trigger_order,
     get_hyperliquid_last_price,
+    is_stop_breached,
 )
+from apps.trade.utils.close_order_hyperliquid import close_hyperliquid_on_breached_stop
 from apps.trade.utils.risk_guard import can_open_futures_position
 from apps.trade.utils.market_risk import EntryDecision, reservation_scope, size_entry
 from apps.trade.utils.locks import user_trade_open_lock
@@ -62,6 +64,7 @@ def place_hyperliquid_futures_protection(exchange, fobj, symbol, side, quantity,
     sl_order = None
     stop_price = None
     sl_trigger = None
+    sl_breached = False
     if settings.DISABLE_FUTURES_STOP_LOSS:
         logger.info(
             f"[sl] Stop loss disabled via feature flag for {symbol}, skipping."
@@ -89,23 +92,32 @@ def place_hyperliquid_futures_protection(exchange, fobj, symbol, side, quantity,
                 exc_info=True,
             )
             sl_order = None
+            sl_breached = is_stop_breached(
+                side, sl_trigger, get_hyperliquid_last_price(exchange, symbol)
+            )
 
     if sl_order:
         fobj.stop_loss_order_id = sl_order["id"]
         fobj.stop_loss_price = sl_trigger
         fobj.stop_loss_status = FutureOrder.TradeStatus.POSITION
-    else:
+    elif settings.DISABLE_FUTURES_STOP_LOSS:
         fobj.stop_loss_order_id = f"DISABLED-{uuid4()}"
         fobj.stop_loss_price = 0
         fobj.stop_loss_status = FutureOrder.TradeStatus.CANCELLED
-        if not settings.DISABLE_FUTURES_STOP_LOSS:
-            logger.warning(
-                f"[sl] No SL order was created for {symbol}, user={user.username}. "
-                f"Position is UNPROTECTED."
-            )
+    else:
+        # FAILED + the intended price: the refresh job retries it.
+        fobj.stop_loss_order_id = f"DISABLED-{uuid4()}"
+        fobj.stop_loss_price = sl_trigger
+        fobj.stop_loss_status = FutureOrder.TradeStatus.FAILED
+        logger.warning(
+            f"[sl] No SL order was created for {symbol}, user={user.username}. "
+            f"Position is UNPROTECTED."
+        )
     fobj.save(
         update_fields=["stop_loss_order_id", "stop_loss_price", "stop_loss_status"]
     )
+    if sl_breached and close_hyperliquid_on_breached_stop(fobj, user):
+        return True
 
     # Optional single TP or multiple TPs
     created_tps = []

@@ -1,5 +1,6 @@
 from contextlib import contextmanager
 
+from django.core.cache import cache
 from django.db import connection, transaction
 
 # Arbitrary namespace so this doesn't collide with any other advisory locks.
@@ -26,3 +27,18 @@ def user_trade_open_lock(user_id):
                 [_TRADE_OPEN_LOCK_NAMESPACE, user_id],
             )
         yield
+
+
+@contextmanager
+def pending_order_lock(order_id):
+    """Yields True to only one caller at a time per resting futures limit
+    order. The 1-minute task, the 5-minute task and a manual refresh can all
+    see the same fill; without this each would place its own SL/TPs. A cache
+    lock rather than a row lock, so nothing already saved gets rolled back."""
+    key = f"lock:pending-futures-order:{order_id}"
+    acquired = cache.add(key, 1, timeout=300)
+    try:
+        yield acquired
+    finally:
+        if acquired:
+            cache.delete(key)

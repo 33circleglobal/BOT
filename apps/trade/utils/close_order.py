@@ -53,6 +53,27 @@ def cancel_pending_limit_order(order: FutureOrder):
         return False
 
 
+def close_on_breached_stop(order: FutureOrder, user: User) -> bool:
+    """The price is already beyond the stop, so the stop order can't be
+    placed: exit at market now, which is what the stop would have done.
+    On failure the order stays POSITION with a FAILED stop, so the next
+    refresh retries."""
+    logger.warning(
+        f"[sl] Price already beyond stop {order.stop_loss_price} for {order.symbol} "
+        f"order {order.id}; closing the position at market."
+    )
+    if not quick_close_position(order, user):
+        logger.error(
+            f"[sl] Could not close {order.symbol} order {order.id} after its stop was "
+            f"breached. Position may be UNPROTECTED."
+        )
+        return False
+    order.stop_loss_status = FutureOrder.TradeStatus.CLOSED
+    order.closed_at = timezone.now()
+    order.save(update_fields=["stop_loss_status", "closed_at", "updated_at"])
+    return True
+
+
 def quick_close_position(order: FutureOrder, user: User):
     try:
         user_binance_key = UserKey.objects.get(user=user, is_active=True)

@@ -10,7 +10,11 @@ from apps.trade.utils.hyperliquid_common import (
     fetch_hl_order_status,
     fetch_hl_fill_data,
     cancel_hl_order,
+    get_hyperliquid_last_price,
+    is_stop_breached,
 )
+from apps.trade.utils.close_order_hyperliquid import close_hyperliquid_on_breached_stop
+from apps.trade.utils.locks import pending_order_lock
 
 import logging
 from django.utils import timezone
@@ -73,7 +77,13 @@ def refresh_hyperliquid_futures_order(order: FutureOrder) -> bool:
     dedicated algo-order endpoint.
     """
     if order.status == FutureOrder.TradeStatus.OPEN:
-        return _refresh_pending_hyperliquid_limit_order(order)
+        with pending_order_lock(order.id) as acquired:
+            if not acquired:
+                return False
+            order.refresh_from_db()
+            if order.status != FutureOrder.TradeStatus.OPEN:
+                return False
+            return _refresh_pending_hyperliquid_limit_order(order)
     if order.status != FutureOrder.TradeStatus.POSITION:
         return False
     try:
@@ -245,6 +255,7 @@ def refresh_hyperliquid_futures_order(order: FutureOrder) -> bool:
                     )
             if has_live_sl:
                 cancel_hl_order(ex, symbol, order.stop_loss_order_id)
+            sl_breached = False
             new_qty = float(ex.amountToPrecision(symbol, float(remaining_qty)))
             try:
                 new_sl = create_trigger_order(
@@ -266,6 +277,10 @@ def refresh_hyperliquid_futures_order(order: FutureOrder) -> bool:
             except Exception as e:
                 order.stop_loss_status = FutureOrder.TradeStatus.FAILED
                 order.stop_loss_order_id = f"RESIZE-FAILED-{uuid4()}"
+                order.stop_loss_price = trigger_price
+                sl_breached = is_stop_breached(
+                    entry_side, trigger_price, get_hyperliquid_last_price(ex, symbol)
+                )
                 logger.error(
                     f"[refresh] Failed to resize SL for HyperLiquid order {order.id} to "
                     f"qty {new_qty}: {e}",
@@ -277,6 +292,8 @@ def refresh_hyperliquid_futures_order(order: FutureOrder) -> bool:
                 (realized_tp_pnl / margin) * Decimal("100") if margin else Decimal("0")
             )
             order.save()
+            if sl_breached:
+                close_hyperliquid_on_breached_stop(order, order.user)
             return True
 
         if newly_filled:

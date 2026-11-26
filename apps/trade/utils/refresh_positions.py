@@ -7,10 +7,12 @@ from apps.trade.utils.common import (
     compute_default_sl,
     split_spot_order_fees,
 )
-from apps.trade.utils.close_order import cancel_algo_order
+from apps.trade.utils.close_order import cancel_algo_order, close_on_breached_stop
+from apps.trade.utils.locks import pending_order_lock
 from apps.trade.utils.create_market_order import create_algo_order, activate_filled_limit_order
 from apps.trade.utils.create_market_binance_spot_order import activate_filled_spot_limit_order
 
+import ccxt
 import logging
 from django.utils import timezone
 from decimal import Decimal
@@ -110,7 +112,13 @@ def refresh_futures_order(order: FutureOrder) -> bool:
       not just a single full-size exit.
     """
     if order.status == FutureOrder.TradeStatus.OPEN:
-        return _refresh_pending_limit_order(order)
+        with pending_order_lock(order.id) as acquired:
+            if not acquired:
+                return False
+            order.refresh_from_db()
+            if order.status != FutureOrder.TradeStatus.OPEN:
+                return False
+            return _refresh_pending_limit_order(order)
     if order.status != FutureOrder.TradeStatus.POSITION:
         return False
     try:
@@ -240,6 +248,7 @@ def refresh_futures_order(order: FutureOrder) -> bool:
                     )
             if has_live_sl:
                 cancel_algo_order(ex, order.symbol, order.stop_loss_order_id)
+            sl_breached = False
             new_qty = float(ex.amountToPrecision(order.symbol, float(remaining_qty)))
             try:
                 new_sl = create_algo_order(
@@ -265,6 +274,8 @@ def refresh_futures_order(order: FutureOrder) -> bool:
                 # tracking a cancelled/stale SL order id.
                 order.stop_loss_status = FutureOrder.TradeStatus.FAILED
                 order.stop_loss_order_id = f"RESIZE-FAILED-{uuid4()}"
+                order.stop_loss_price = trigger_price
+                sl_breached = isinstance(e, ccxt.OrderImmediatelyFillable)
                 logger.error(
                     f"[refresh] Failed to resize SL for order {order.id} to "
                     f"qty {new_qty}: {e}",
@@ -276,6 +287,8 @@ def refresh_futures_order(order: FutureOrder) -> bool:
                 (realized_tp_pnl / margin) * Decimal("100") if margin else Decimal("0")
             )
             order.save()
+            if sl_breached:
+                close_on_breached_stop(order, order.user)
             return True
 
         if newly_filled:

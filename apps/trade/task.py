@@ -385,6 +385,18 @@ def refresh_single_future_position(self, order_id):
         raise self.retry(exc=e)
 
 
+# --- Resting futures limit entries (celery beat, every 1 min) -------------------
+@celery_app.task(bind=True)
+def refresh_pending_futures_orders(self):
+    """SL/TPs can only be placed once a resting entry is seen as filled, so
+    these are checked more often than open positions."""
+    order_ids = FutureOrder.objects.filter(
+        status=FutureOrder.TradeStatus.OPEN
+    ).values_list("id", flat=True)
+    for order_id in order_ids:
+        refresh_single_future_position.apply_async(args=[order_id], expires=60)
+
+
 # --- Periodic spot position refresh (celery beat, every 5 min) -----------------
 @celery_app.task(bind=True)
 def refresh_all_spot_positions(self):

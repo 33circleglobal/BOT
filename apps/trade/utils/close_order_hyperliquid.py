@@ -39,6 +39,24 @@ def cancel_pending_hyperliquid_limit_order(order: FutureOrder):
         return False
 
 
+def close_hyperliquid_on_breached_stop(order: FutureOrder, user: User) -> bool:
+    """HyperLiquid equivalent of close_on_breached_stop."""
+    logger.warning(
+        f"[sl] Price already beyond stop {order.stop_loss_price} for HyperLiquid "
+        f"{order.symbol} order {order.id}; closing the position at market."
+    )
+    if not quick_close_hyperliquid_position(order, user):
+        logger.error(
+            f"[sl] Could not close HyperLiquid {order.symbol} order {order.id} after its "
+            f"stop was breached. Position may be UNPROTECTED."
+        )
+        return False
+    order.stop_loss_status = FutureOrder.TradeStatus.CLOSED
+    order.closed_at = timezone.now()
+    order.save(update_fields=["stop_loss_status", "closed_at", "updated_at"])
+    return True
+
+
 def quick_close_hyperliquid_position(order: FutureOrder, user: User):
     try:
         hl_key = UserHyperLiquidKey.objects.get(user=user, is_active=True)

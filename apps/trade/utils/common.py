@@ -75,10 +75,13 @@ def get_symbol_last_price(exchange, symbol: str):
 def compute_default_sl(entry_price: float, side: str, pct: float = 0.0025) -> float:
     """Compute default stop-loss price at +/- pct from entry based on side."""
     side = side.lower()
+    # 10 places matches the DB column. Anything coarser breaks low-priced
+    # coins (4 places turns a 0.000048 short stop into 0.0); callers apply the
+    # exchange's own price precision.
     if side == "buy":
-        return round(float(entry_price) * (1 - pct), 4)
+        return round(float(entry_price) * (1 - pct), 10)
     else:
-        return round(float(entry_price) * (1 + pct), 4)
+        return round(float(entry_price) * (1 + pct), 10)
 
 
 def opposite_side(side: str) -> str:

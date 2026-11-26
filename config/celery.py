@@ -20,6 +20,11 @@ app.conf.beat_schedule = {
         "task": "apps.trade.task.refresh_all_futures_positions",
         "schedule": 300.0,
     },
+    "refresh-pending-futures-orders-every-1-min": {
+        "task": "apps.trade.task.refresh_pending_futures_orders",
+        "schedule": 60.0,
+        "options": {"expires": 60},
+    },
     "refresh-spot-positions-every-5-min": {
         "task": "apps.trade.task.refresh_all_spot_positions",
         "schedule": 300.0,

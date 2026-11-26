@@ -6,6 +6,7 @@ from apps.trade.utils.common import (
     compute_default_sl,
     opposite_side,
 )
+from apps.trade.utils.close_order import close_on_breached_stop
 from apps.trade.utils.risk_guard import can_open_futures_position
 from apps.trade.utils.locks import user_trade_open_lock
 
@@ -151,6 +152,7 @@ def place_futures_protection(exchange, fobj, side, quantity, cur, sl, tp, tps, u
     sl_order = None
     stop_price = None
     sl_trigger = None
+    sl_breached = False
     if settings.DISABLE_FUTURES_STOP_LOSS:
         logger.info(
             f"[sl] Stop loss disabled via feature flag for {symbol}, skipping."
@@ -179,6 +181,8 @@ def place_futures_protection(exchange, fobj, side, quantity, cur, sl, tp, tps, u
                 exc_info=True,
             )
             sl_order = None
+            # -2021 "Order would immediately trigger"
+            sl_breached = isinstance(e, ccxt.OrderImmediatelyFillable)
 
     if sl_order:
         # Use sl_trigger (the price we actually sent to Binance) rather
@@ -189,18 +193,24 @@ def place_futures_protection(exchange, fobj, side, quantity, cur, sl, tp, tps, u
         fobj.stop_loss_order_id = sl_order["id"]
         fobj.stop_loss_price = sl_trigger
         fobj.stop_loss_status = FutureOrder.TradeStatus.POSITION
-    else:
+    elif settings.DISABLE_FUTURES_STOP_LOSS:
         fobj.stop_loss_order_id = f"DISABLED-{uuid4()}"
         fobj.stop_loss_price = 0
         fobj.stop_loss_status = FutureOrder.TradeStatus.CANCELLED
-        if not settings.DISABLE_FUTURES_STOP_LOSS:
-            logger.warning(
-                f"[sl] No SL order was created for {symbol}, user={user.username}. "
-                f"Position is UNPROTECTED."
-            )
+    else:
+        # FAILED + the intended price: the refresh job retries it.
+        fobj.stop_loss_order_id = f"DISABLED-{uuid4()}"
+        fobj.stop_loss_price = sl_trigger
+        fobj.stop_loss_status = FutureOrder.TradeStatus.FAILED
+        logger.warning(
+            f"[sl] No SL order was created for {symbol}, user={user.username}. "
+            f"Position is UNPROTECTED."
+        )
     fobj.save(
         update_fields=["stop_loss_order_id", "stop_loss_price", "stop_loss_status"]
     )
+    if sl_breached and close_on_breached_stop(fobj, user):
+        return True
 
     # Optional single TP or multiple TPs. Everything in this section
     # is wrapped in its own try/except: entry + SL are already live
