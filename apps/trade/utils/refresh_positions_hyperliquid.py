@@ -180,6 +180,48 @@ def refresh_hyperliquid_futures_order(order: FutureOrder) -> bool:
                 order.save()
                 return True
 
+        # --- 3b. Position gone from the exchange with no SL/TP fill ----------
+        # Happens when a manual/webhook close executed on HyperLiquid but the
+        # request died (e.g. gunicorn timeout) before the DB was updated; the
+        # SL/TPs were cancelled by the close so steps 2-3 can never see it.
+        if remaining_qty > DUST and (timezone.now() - order.created_at).total_seconds() > 120:
+            positions = ex.fetch_positions([symbol])
+            still_open = any(abs(float(p.get("contracts") or 0)) > 0 for p in positions)
+            if not still_open:
+                closes = [
+                    t for t in ex.fetch_my_trades(symbol, None, 100)
+                    if str((t.get("info") or {}).get("dir", "")).startswith("Close")
+                    and t["timestamp"] >= order.created_at.timestamp() * 1000
+                ]
+                if closes:
+                    qty = sum(float(t["amount"]) for t in closes)
+                    exit_avg = sum(float(t["price"]) * float(t["amount"]) for t in closes) / qty
+                    close_pnl = sum(float((t.get("info") or {}).get("closedPnl") or 0) for t in closes)
+                    fee = sum(float((t.get("fee") or {}).get("cost") or 0) for t in closes)
+                    leg_pnl = Decimal(str(close_pnl))
+                    for c in children:
+                        if c.status == FutureTakeProfit.TradeStatus.POSITION:
+                            cancel_hl_order(ex, symbol, c.tp_order_id)
+                            c.status = FutureTakeProfit.TradeStatus.CANCELLED
+                            c.save()
+                    if order.stop_loss_status == FutureOrder.TradeStatus.POSITION and order.stop_loss_order_id:
+                        cancel_hl_order(ex, symbol, order.stop_loss_order_id)
+                    total_pnl = realized_tp_pnl + leg_pnl
+                    order.status = FutureOrder.TradeStatus.CLOSED
+                    order.stop_loss_status = FutureOrder.TradeStatus.CANCELLED
+                    order.total_fee = float(order.total_fee or 0) + fee
+                    order.pnl = total_pnl
+                    order.pnl_percentage = (
+                        (total_pnl / margin) * Decimal("100") if margin else Decimal("0")
+                    )
+                    order.closed_at = timezone.now()
+                    order.save()
+                    logger.warning(
+                        f"[refresh] HyperLiquid order {order.id} was already closed on the "
+                        f"exchange (avg exit {exit_avg}); reconciled DB to CLOSED."
+                    )
+                    return True
+
         # --- 4. Partial TP fill, position still open: resize the SL qty -----
         sl_needs_resize = newly_filled or order.stop_loss_status == FutureOrder.TradeStatus.FAILED
         has_live_sl = (
